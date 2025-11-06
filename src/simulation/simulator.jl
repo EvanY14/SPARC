@@ -28,16 +28,28 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
 
     g = μ / r^2 # Gravitational acceleration
 
-    du[1] = v * sin_γ #  h_dot
-    du[2] = (v * cos_γ * sin_ψ) / r / cos_θ # ϕ_dot
-    du[3] = (v * cos_γ * cos_ψ) / r # θ_dot
-    du[4] = -drag / m - μ * sin_γ # v_dot
-    du[5] = (lift * cos_β) / (m * v) + cos_γ*(v/r - g/v) # γ_dot
-    du[6] = (lift * sin_β) / (m * v * cos_γ) + (v * cos_γ * sin_ψ * tan_θ) / r # ψ_dot
+    du[1] = (v * sin_γ) #  h_dot
+    du[2] = (v/r) * cos_γ * sin_ψ / cos_θ # ϕ_dot (longitude)
+    du[3] = (v/r) * cos_γ * cos_ψ # θ_dot (latitude)
+    du[4] = (-drag / m - g * sin_γ) # v_dot
+    du[5] = (lift/(m*v) * cos_β) + cos_γ*(v/r - g/v) # γ_dot (flight path angle)
+    du[6] = (lift * sin_β) / (m * v * cos_γ) + (v * cos_γ * sin_ψ * tan_θ) / r # ψ_dot (azimuth)
 end
 
-function atmospheric_density(h::Float64, polyfit::PolyfitAtmosphere)
-    polyfit_coefficients = polyfit.polyfit_coefficients
+
+function altitude_condition(u, t, integrator)
+    h = u[1] # Unnormalize altitude
+    return h - integrator.p.target_altitude
+end
+
+function altitude_effect!(integrator)
+    terminate!(integrator)
+end
+
+altitude_termination_condition = ContinuousCallback(altitude_condition, altitude_effect!)
+
+function atmospheric_density(h::Float64, atmosphere_model::PolyfitAtmosphere)
+    polyfit_coefficients = atmosphere_model.polyfit_coefficients
     power = zeros(length(polyfit_coefficients))
     # Convert height from meters to kilometers
     h = h * 1e-3
@@ -50,4 +62,8 @@ function atmospheric_density(h::Float64, polyfit::PolyfitAtmosphere)
     # Calculate the density
     ρ = exp(exponent)
     return ρ
+end
+
+function atmospheric_density(h::Float64, atmosphere_model::ExponentialAtmosphere)
+    return atmosphere_model.surface_density * exp(-h*1e-3/atmosphere_model.scale_height)
 end
