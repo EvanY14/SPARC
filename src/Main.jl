@@ -5,7 +5,7 @@ using .SimulatorModel
 using StaticArrays
 using Plots
 using DifferentialEquations
-plotly()
+gr()
 # Define initial conditions and parameters
 h0 = 125000.0      # Initial altitude in meters
 ϕ0 = deg2rad(126.8)            # Initial longitude in radians
@@ -23,27 +23,72 @@ lift_coefficient = 0.24*drag_coefficient
 area = 15.904 # m^2
 μ = 4.2828372e13 # m^3/s^2 for Mars
 R = 3389500.0 # m for Mars
-β = deg2rad(0.0) # Bank angle in radians
+β = (u, p, t) -> deg2rad(45*sin(t*pi/250)) # Bank angle function in radians
+# β = () -> deg2rad(rand() * 90.0 - 45.0) # Bank angle in radians
 target_altitude = 11848.0 # Termination altitude in meters
 
 polyfit_coeffs = Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002]
 polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(SVector{length(polyfit_coeffs), Float64}(polyfit_coeffs))
 # exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
-gram_atmosphere = GramAtmosphere("Gram_Data/", false, "mars", DateTime(2024, 1, 1, 0, 0, 0.0))
-edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, β, target_altitude, h -> atmospheric_density(h, gram_atmosphere))
+# gram_atmosphere = GramAtmosphere("Gram_Data/", false, "mars", DateTime(2024, 1, 1, 0, 0, 0.0))
+edl_cache = EDLCache()
+edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, β, 0.0, target_altitude, h -> atmospheric_density(h, polyfit_atmosphere, true), 0.0, edl_cache)
 
+callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback)
 # Define the ODE problem
-prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=altitude_termination_condition)
+prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
 # Solve the ODE problem
 sol = solve(prob, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
 # The solution `sol` now contains the state of the system over time
 display(plot(sol.t, getindex.(sol.u, 1) ./ 1e3 , xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", legend=false))
 display(plot(sol.t, getindex.(sol.u, 4) ./ 1e3 , xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", legend=false))
 display(plot(getindex.(sol.u, 2) .* (180 / π), getindex.(sol.u, 3) .* (180 / π), xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="EDL Simulation: Ground Track", legend=false))
-densities = zeros(length(sol.u))
-for i in 1:length(sol.u)
-    h = getindex(sol.u[i], 1)
-    densities[i] = atmospheric_density(h, polyfit_atmosphere)
+
+# Get saved data
+saved_data = saved_values.saveval
+densities = zeros(length(saved_data))
+betas = zeros(length(saved_data))
+for i in 1:length(saved_data)
+    densities[i] = saved_data[i][1]
+    betas[i] = saved_data[i][2]
 end
-display(plot(getindex.(sol.u, 1) ./ 1e3, densities, xlabel="Altitude (km)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
+println(size(betas))
+println(size(saved_values.t))
+# display(plot(saved_values.t, densities, xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
+display(plot(saved_values.t, betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", legend=false))
+# Monte Carlo to test atmospheric disturbances
+num_simulations = 500
+final_latitudes = zeros(num_simulations)
+final_longitudes = zeros(num_simulations)
+altitude_profiles = []
+velocity_profiles = []
+times = []
+for sim in 1:num_simulations
+    println("Running simulation $sim...")
+    prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
+    sol_mc = solve(prob_mc, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
+    push!(altitude_profiles, getindex.(sol_mc.u, 1) ./ 1e3)
+    push!(velocity_profiles, getindex.(sol_mc.u, 4) ./ 1e3)
+    push!(times, sol_mc.t)
+    final_latitudes[sim] = getindex(sol_mc.u[end], 3) * (180 / π)
+    final_longitudes[sim] = getindex(sol_mc.u[end], 2) * (180 / π)
+end
+
+# Plot MC results
+# Altitude profiles
+plt1 = plot(title="Monte Carlo Simulations: Altitude Profiles", xlabel="Time (s)", ylabel="Altitude (km)", legend=false)
+for i in 1:num_simulations
+    plot!(plt1, times[i], altitude_profiles[i])
+end
+display(plt1)
+
+# Velocity profiles
+plt2 = plot(title="Monte Carlo Simulations: Velocity Profiles", xlabel="Time (s)", ylabel="Velocity (km/s)", legend=false)
+for i in 1:num_simulations
+    plot!(plt2, times[i], velocity_profiles[i])
+end
+display(plt2)
+
+# Final landing locations
+display(plot(final_longitudes, final_latitudes, seriestype=:scatter, xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="Monte Carlo Simulations: Final Landing Locations", legend=false))
 

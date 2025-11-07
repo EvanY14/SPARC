@@ -1,8 +1,10 @@
 module ModelTypes
     using StaticArrays
-    using PythonCall
+    # using PythonCall
 
-    export EDLParams, PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere, DateTime
+    export EDLParams, EDLCache
+    export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere 
+    export DateTime
 
     @kwdef struct DateTime
         year::Int64 = 2024
@@ -12,16 +14,25 @@ module ModelTypes
         minutes::Int64 = 0
         secs::Float64 = 0.0
     end
-    @kwdef struct EDLParams
+
+    @kwdef mutable struct EDLCache
+        atmospheric_density::Float64 = 0.0
+        β::Float64 = 0.0
+    end
+
+    @kwdef mutable struct EDLParams
         mass::Float64 = 0.0
         Cd::Float64 = 0.0
         Cl::Float64 = 0.0
         area::Float64 = 0.0
         μ::Float64 = 0.0          # Gravitational parameter
         R::Float64 = 0.0          # Planetary radius
-        β::Float64 = 0.0          # Bank angle, radians, from control input
+        β_function::Function = (u, p, t) -> 0.0          # Bank angle, radians, from control input
+        β::Float64 = 0.0          # Current bank angle
         target_altitude::Float64 = 0.0  # Altitude to terminate simulation
-        atmospheric_density::Function = (h) -> 0.0  # Function of altitude
+        atmospheric_density_function::Function = (h) -> 0.0  # Function of altitude
+        atmospheric_density::Float64 = 0.0  # Current atmospheric density
+        cache::EDLCache = EDLCache()
     end
 
     @kwdef struct PolyfitAtmosphere{N}
@@ -33,83 +44,83 @@ module ModelTypes
         scale_height::Float64 = 0.0
     end
 
-    struct GramAtmosphere
-        gram::Any
-        gram_atmosphere::Any
-    end
+    # struct GramAtmosphere
+    #     gram::Any
+    #     gram_atmosphere::Any
+    # end
 
-    function GramAtmosphere(gram_directory::String, monte_carlo::Bool, planet_name::String, date::DateTime)
-        println("Importing...")
-        sleep(3.0)
-        sys = pyimport("sys")
-        os = pyimport("os")
-        println("Imported os module in Python")
-        sleep(3.0)
-        if !(gram_directory in pyconvert(Vector{String}, sys.path))
-            sys.path.append(gram_directory)
-        end
-        gram = pyimport("gram")
-        inputParameters = Dict("earth" => gram.EarthInputParameters(),
-                            "mars" => gram.MarsInputParameters(),
-                            "venus" => gram.VenusInputParameters(),
-                            "titan" => gram.TitanInputParameters())
+    # function GramAtmosphere(gram_directory::String, monte_carlo::Bool, planet_name::String, date::DateTime)
+    #     println("Importing...")
+    #     sleep(3.0)
+    #     sys = pyimport("sys")
+    #     os = pyimport("os")
+    #     println("Imported os module in Python")
+    #     sleep(3.0)
+    #     if !(gram_directory in pyconvert(Vector{String}, sys.path))
+    #         sys.path.append(gram_directory)
+    #     end
+    #     gram = pyimport("gram")
+    #     inputParameters = Dict("earth" => gram.EarthInputParameters(),
+    #                         "mars" => gram.MarsInputParameters(),
+    #                         "venus" => gram.VenusInputParameters(),
+    #                         "titan" => gram.TitanInputParameters())
         
-        namelistReaders = Dict("earth" => gram.EarthNamelistReader(),
-                            "mars" => gram.MarsNamelistReader(),
-                            "venus" => gram.VenusNamelistReader(),
-                            "titan" => gram.TitanNamelistReader())
+    #     namelistReaders = Dict("earth" => gram.EarthNamelistReader(),
+    #                         "mars" => gram.MarsNamelistReader(),
+    #                         "venus" => gram.VenusNamelistReader(),
+    #                         "titan" => gram.TitanNamelistReader())
             
-        atmospheres = Dict("earth" => gram.EarthAtmosphere(),
-                        "mars" => gram.MarsAtmosphere(),
-                        "venus" => gram.VenusAtmosphere(),
-                        "titan" => gram.TitanAtmosphere())
+    #     atmospheres = Dict("earth" => gram.EarthAtmosphere(),
+    #                     "mars" => gram.MarsAtmosphere(),
+    #                     "venus" => gram.VenusAtmosphere(),
+    #                     "titan" => gram.TitanAtmosphere())
 
-        planet_name = m.planet.name
-        input_parameters = inputParameters[planet_name]
+    #     planet_name = m.planet.name
+    #     input_parameters = inputParameters[planet_name]
 
-        # Mars has some weird specific parameters, so this line is just to check to make sure the it doesn't do it for the other planets
-        if planet_name == "mars"
-            # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
-            input_parameters.dataPath = gram_directory * "/Mars/data/"
-            if !Bool(os.path.exists(input_parameters.dataPath))
-                throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))
-            end
-        end
+    #     # Mars has some weird specific parameters, so this line is just to check to make sure the it doesn't do it for the other planets
+    #     if planet_name == "mars"
+    #         # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
+    #         input_parameters.dataPath = gram_directory * "/Mars/data/"
+    #         if !Bool(os.path.exists(input_parameters.dataPath))
+    #             throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))
+    #         end
+    #     end
 
-        if planet_name == "earth"
-            # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
-            input_parameters.dataPath = gram_directory * "/Earth/data/"
-            if !Bool(os.path.exists(input_parameters.dataPath))
-                throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))
-            end
-        end
+    #     if planet_name == "earth"
+    #         # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
+    #         input_parameters.dataPath = gram_directory * "/Earth/data/"
+    #         if !Bool(os.path.exists(input_parameters.dataPath))
+    #             throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))
+    #         end
+    #     end
 
-        reader = namelistReaders[planet_name]
-        reader.tryGetSpicePath(input_parameters)
+    #     reader = namelistReaders[planet_name]
+    #     reader.tryGetSpicePath(input_parameters)
 
-        gram_atmosphere = atmospheres[planet_name]
-        gram_atmosphere.setInputParameters(input_parameters)
+    #     gram_atmosphere = atmospheres[planet_name]
+    #     gram_atmosphere.setInputParameters(input_parameters)
         
-        if planet_name == "earth"
-            gram_atmosphere.setMERRA2Parameters(0, -90.0, 90.0, 0.0, 359.99999)
-        end
-        gram_atmosphere.setPerturbationScales(1.5)
-        gram_atmosphere.setMinRelativeStepSize(0.5)
-        if monte_carlo
-            gram_atmosphere.setSeed(Int(round(rand()*10000)))
-        else
-            gram_atmosphere.setSeed(1001)
-            # gram_atmosphere.setSeed(Int(round(rand()*10000)))
-        end
+    #     if planet_name == "earth"
+    #         gram_atmosphere.setMERRA2Parameters(0, -90.0, 90.0, 0.0, 359.99999)
+    #     end
+    #     gram_atmosphere.setPerturbationScales(1.5)
+    #     gram_atmosphere.setMinRelativeStepSize(0.5)
+    #     if monte_carlo
+    #         gram_atmosphere.setSeed(Int(round(rand()*10000)))
+    #     else
+    #         gram_atmosphere.setSeed(1001)
+    #         # gram_atmosphere.setSeed(Int(round(rand()*10000)))
+    #     end
 
-        if planet_name == "mars"
-            gram_atmosphere.setMOLAHeights(false)
-        end
+    #     if planet_name == "mars"
+    #         gram_atmosphere.setMOLAHeights(false)
+    #     end
 
-        ttime = gram.GramTime()
-        ttime.setStartTime(date.year, date.month, date.day, date.hours, date.minutes, date.secs, gram.UTC, gram.PET)
-        gram_atmosphere.setStartTime(ttime)
+    #     ttime = gram.GramTime()
+    #     ttime.setStartTime(date.year, date.month, date.day, date.hours, date.minutes, date.secs, gram.UTC, gram.PET)
+    #     gram_atmosphere.setStartTime(ttime)
 
-        return GramAtmosphere(gram, gram_atmosphere)
-    end
+    #     return GramAtmosphere(gram, gram_atmosphere)
+    # end
 end # module ModelTypes
