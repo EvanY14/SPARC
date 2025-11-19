@@ -40,7 +40,7 @@ function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, distu
     lat = rad2deg(u[3])  # Convert latitude to degrees
     lon = rad2deg(u[2])  # Convert longitude to degrees
     position = gram.Position()
-    position.height = u[1] * 1e-3
+    position.height = alt
     position.latitude = lat
     position.longitude = lon
 
@@ -49,9 +49,9 @@ function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, distu
     atmosphere.update()
     atmos = atmosphere.getAtmosphereState()
     rho = pyconvert(Float64, disturbance ? atmos.perturbedDensity : atmos.density)
-    T = pyconvert(Float64, atmos.temperature)
-    wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
-            pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),
-            pyconvert(Float64, atmos.verticalWind)])
+    # T = pyconvert(Float64, atmos.temperature)
+    # wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
+    #         pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),
+    #         pyconvert(Float64, atmos.verticalWind)])
     return rho
 end
