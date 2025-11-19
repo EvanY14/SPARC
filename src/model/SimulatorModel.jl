@@ -1,6 +1,8 @@
 module SimulatorModel
     using StaticArrays
     using Reexport
+    using DifferentialEquations
+    using PythonCall
 
     export edl_dynamics 
     export atmospheric_density
