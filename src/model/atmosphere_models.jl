@@ -48,7 +48,7 @@ function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, distu
     atmosphere.setPosition(position)
     atmosphere.update()
     atmos = atmosphere.getAtmosphereState()
-    rho = pyconvert(Float64, atmos.density)
+    rho = pyconvert(Float64, disturbance ? atmos.perturbedDensity : atmos.density)
     T = pyconvert(Float64, atmos.temperature)
     wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
             pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),

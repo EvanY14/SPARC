@@ -5,6 +5,7 @@ using .SimulatorModel
 using StaticArrays
 using Plots
 using DifferentialEquations
+using ProgressMeter
 gr()
 # Define initial conditions and parameters
 h0 = 125000.0      # Initial altitude in meters
@@ -63,7 +64,8 @@ final_longitudes = zeros(num_simulations)
 altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 times = Vector{Vector{Float64}}(undef, num_simulations)
-for sim in 1:num_simulations
+@showprogress for sim in 1:num_simulations
+    
     prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
     sol_mc = solve(prob_mc, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
     altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
