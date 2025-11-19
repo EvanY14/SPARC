@@ -1,10 +1,10 @@
 # using PythonCall
 
-function atmospheric_density(h::Float64, atmosphere_model::PolyfitAtmosphere, disturbance::Bool=false)
+function atmospheric_density(integrator, atmosphere_model::PolyfitAtmosphere, disturbance::Bool=false)
     polyfit_coefficients = atmosphere_model.polyfit_coefficients
     power = zeros(length(polyfit_coefficients))
     # Convert height from meters to kilometers
-    h = h * 1e-3
+    h = integrator.u[1] * 1e-3
     # Calculate the polynomial value at height h
     for i=1:length(polyfit_coefficients)
         power[i] = (h)^(length(polyfit_coefficients)-i)
@@ -18,17 +18,18 @@ function atmospheric_density(h::Float64, atmosphere_model::PolyfitAtmosphere, di
         disturbance_factor = 1.0 + (randn() * 0.1)
         ρ *= disturbance_factor
     end
-    return ρ
+    return ρ, SVector{3, Float64}(0.0, 0.0, 0.0)
 end
 
-function atmospheric_density(h::Float64, atmosphere_model::ExponentialAtmosphere, disturbance::Bool=false)
+function atmospheric_density(integrator, atmosphere_model::ExponentialAtmosphere, disturbance::Bool=false)
+    h = integrator.u[1]  # Altitude in meters
     ρ = atmosphere_model.surface_density * exp(-h*1e-3/atmosphere_model.scale_height)
     if disturbance
         # Apply a random disturbance of up to ±5%
         disturbance_factor = 1.0 + (rand() * 0.1 - 0.05)
         ρ *= disturbance_factor
     end
-    return ρ
+    return ρ, SVector{3, Float64}(0.0, 0.0, 0.0)
 end
 
 function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, disturbance::Bool=false)
@@ -50,8 +51,8 @@ function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, distu
     atmos = atmosphere.getAtmosphereState()
     rho = pyconvert(Float64, disturbance ? atmos.perturbedDensity : atmos.density)
     # T = pyconvert(Float64, atmos.temperature)
-    # wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
-    #         pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),
-    #         pyconvert(Float64, atmos.verticalWind)])
-    return rho
+    wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
+            pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),
+            pyconvert(Float64, atmos.verticalWind)])
+    return rho, wind
 end

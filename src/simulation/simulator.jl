@@ -13,8 +13,17 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
     p.β = p.β_function(u, p, t) # Bank angle
     r = R + h # Distance from planet center
 
-    drag = 0.5 * p.atmospheric_density * v^2 * Cd * A # Drag force
-    lift = 0.5 * p.atmospheric_density * v^2 * Cl * A # Lift force
+    # calculate wind-relative velocity
+    wind = p.wind
+    v_vector = SVector{3, Float64}(
+        v * cos(γ) * cos(ψ),
+        v * cos(γ) * sin(ψ),
+        v * sin(γ)
+    )
+    v_rel_vector = v_vector - wind
+    v_rel = norm(v_rel_vector)
+    drag = 0.5 * p.atmospheric_density * v_rel^2 * Cd * A # Drag force
+    lift = 0.5 * p.atmospheric_density * v_rel^2 * Cl * A # Lift force
 
     # Trig functions
     sin_γ = sin(γ)

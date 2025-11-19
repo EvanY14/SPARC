@@ -13,7 +13,7 @@ function atmospheric_density_effect!(integrator)
     # println(typeof(integrator))
     density_function = integrator.p.atmospheric_density_function
     h = integrator.u[1]
-    integrator.p.atmospheric_density = density_function(integrator)
+    integrator.p.atmospheric_density, integrator.p.wind = density_function(integrator)
 end
 
 atmospheric_density_callback = DiscreteCallback((u, t, integrator) -> true, atmospheric_density_effect!)

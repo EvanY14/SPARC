@@ -24,7 +24,8 @@ lift_coefficient = 0.24*drag_coefficient
 area = 15.904 # m^2
 μ = 4.2828372e13 # m^3/s^2 for Mars
 R = 3389500.0 # m for Mars
-β = (u, p, t) -> deg2rad(45*sin(t*pi/250)) # Bank angle function in radians
+β = (u, p, t) -> deg2rad(0.0) # Constant bank angle in radians
+# β = (u, p, t) -> deg2rad(45*sin(t*pi/250)) # Bank angle function in radians
 # β = () -> deg2rad(rand() * 90.0 - 45.0) # Bank angle in radians
 target_altitude = 11848.0 # Termination altitude in meters
 
@@ -33,13 +34,13 @@ polyfit_coeffs = Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.099871
 # exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
 gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2024, 1, 1, 0, 0, 0.0))
 edl_cache = EDLCache()
-edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, β, 0.0, target_altitude, integrator -> atmospheric_density(integrator, gram_atmosphere, false), 0.0, edl_cache)
+edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, β, 0.0, target_altitude, integrator -> atmospheric_density(integrator, gram_atmosphere, false), 0.0, SVector{3, Float64}(zeros(3)), edl_cache)
 
 callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback)
 # Define the ODE problem
 prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
 # Solve the ODE problem
-sol = solve(prob, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
+sol = solve(prob, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=1.0)
 # The solution `sol` now contains the state of the system over time
 display(plot(sol.t, getindex.(sol.u, 1) ./ 1e3 , xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", legend=false))
 display(plot(sol.t, getindex.(sol.u, 4) ./ 1e3 , xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", legend=false))
@@ -58,7 +59,7 @@ println(size(saved_values.t))
 # display(plot(saved_values.t, densities, xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
 display(plot(saved_values.t, betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", legend=false))
 # Monte Carlo to test atmospheric disturbances
-num_simulations = 500
+num_simulations = 1000
 final_latitudes = zeros(num_simulations)
 final_longitudes = zeros(num_simulations)
 altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
@@ -68,7 +69,7 @@ gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime
 edl_params.atmospheric_density_function = integrator -> atmospheric_density(integrator, gram_atmosphere, true)
 @showprogress for sim in 1:num_simulations
     prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
-    sol_mc = solve(prob_mc, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
+    sol_mc = solve(prob_mc, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=1.0)
     altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
     velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
     times[sim] = sol_mc.t

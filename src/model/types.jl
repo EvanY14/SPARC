@@ -32,6 +32,7 @@ module ModelTypes
         target_altitude::Float64 = 0.0  # Altitude to terminate simulation
         atmospheric_density_function::Function = (h) -> 0.0  # Function of altitude
         atmospheric_density::Float64 = 0.0  # Current atmospheric density
+        wind::SVector{3, Float64} = SVector{3, Float64}(0.0, 0.0, 0.0)  # Current wind vector
         cache::EDLCache = EDLCache()
     end
 
