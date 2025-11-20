@@ -2,10 +2,9 @@ module ModelTypes
     using StaticArrays
     using PythonCall
 
-    export EDLParams, EDLCache
+    export EDLParams, EDLCache, TargetStates, OptimizationStates
     export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere 
     export DateTime
-
     @kwdef struct DateTime
         year::Int64 = 2024
         month::Int64 = 1
@@ -20,6 +19,24 @@ module ModelTypes
         β::Float64 = 0.0
     end
 
+    @kwdef struct TargetStates
+        altitude::Float64 = 0.0
+        longitude::Float64 = 0.0
+        latitude::Float64 = 0.0
+        velocity::Float64 = 0.0
+        flight_path_angle::Float64 = 0.0
+    end
+
+    @kwdef mutable struct OptimizationStates
+        h_c::Vector{Float64} = zeros(0)
+        ϕ_c::Vector{Float64} = zeros(0)
+        θ_c::Vector{Float64} = zeros(0)
+        v_c::Vector{Float64} = zeros(0)
+        γ_c::Vector{Float64} = zeros(0)
+        ψ_c::Vector{Float64} = zeros(0)
+        β_c::Vector{Float64} = zeros(0)
+        Δt_c::Vector{Float64} = zeros(0)
+    end
     @kwdef mutable struct EDLParams
         mass::Float64 = 0.0
         Cd::Float64 = 0.0
@@ -27,12 +44,13 @@ module ModelTypes
         area::Float64 = 0.0
         μ::Float64 = 0.0          # Gravitational parameter
         R::Float64 = 0.0          # Planetary radius
-        β_function::Function = (u, p, t) -> 0.0          # Bank angle, radians, from control input
+        control_function::Function = (u, p, t) -> 0.0          # Bank angle, radians, from control input
         β::Float64 = 0.0          # Current bank angle
-        target_altitude::Float64 = 0.0  # Altitude to terminate simulation
         atmospheric_density_function::Function = (h) -> 0.0  # Function of altitude
         atmospheric_density::Float64 = 0.0  # Current atmospheric density
         wind::SVector{3, Float64} = SVector{3, Float64}(0.0, 0.0, 0.0)  # Current wind vector
+        target_states::TargetStates = TargetStates()
+        optimization_states::OptimizationStates = OptimizationStates()
         cache::EDLCache = EDLCache()
     end
 

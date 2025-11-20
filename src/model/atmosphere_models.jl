@@ -1,28 +1,22 @@
 # using PythonCall
 
-function atmospheric_density(integrator, atmosphere_model::PolyfitAtmosphere, disturbance::Bool=false)
+function atmospheric_density(LatLonAlt::Tuple, t::Real, atmosphere_model::PolyfitAtmosphere, disturbance::Bool=false)
     polyfit_coefficients = atmosphere_model.polyfit_coefficients
-    power = zeros(length(polyfit_coefficients))
+    # power = zeros(Real, length(polyfit_coefficients))
+    exponent = 0.0
     # Convert height from meters to kilometers
-    h = integrator.u[1] * 1e-3
+    h = LatLonAlt[3] * 1e-3
     # Calculate the polynomial value at height h
-    for i=1:length(polyfit_coefficients)
-        power[i] = (h)^(length(polyfit_coefficients)-i)
+    for i in eachindex(polyfit_coefficients)
+        exponent += polyfit_coefficients[i] * (h)^(length(polyfit_coefficients)-i)
     end
-    # Calculate the exponent term of the density using the polynomial coefficients
-    exponent = sum(polyfit_coefficients .* power)
     # Calculate the density
     ρ = exp(exponent)
-    if disturbance
-        # Apply a random disturbance of up to ±10%
-        disturbance_factor = 1.0 + (randn() * 0.1)
-        ρ *= disturbance_factor
-    end
     return ρ, SVector{3, Float64}(0.0, 0.0, 0.0)
 end
 
-function atmospheric_density(integrator, atmosphere_model::ExponentialAtmosphere, disturbance::Bool=false)
-    h = integrator.u[1]  # Altitude in meters
+function atmospheric_density(LatLonAlt::Tuple, t::Float64, atmosphere_model::ExponentialAtmosphere, disturbance::Bool=false)
+    h = LatLonAlt[3]  # Altitude in meters
     ρ = atmosphere_model.surface_density * exp(-h*1e-3/atmosphere_model.scale_height)
     if disturbance
         # Apply a random disturbance of up to ±5%
@@ -32,14 +26,12 @@ function atmospheric_density(integrator, atmosphere_model::ExponentialAtmosphere
     return ρ, SVector{3, Float64}(0.0, 0.0, 0.0)
 end
 
-function atmospheric_density(integrator, atmosphere_model::GramAtmosphere, disturbance::Bool=false)
+function atmospheric_density(LatLonAlt::Tuple, t::Float64, atmosphere_model::GramAtmosphere, disturbance::Bool=false)
     gram = atmosphere_model.gram
     atmosphere = atmosphere_model.gram_atmosphere
-    u = integrator.u
-    t = integrator.t
-    alt = u[1] * 1e-3  # Convert altitude to km
-    lat = rad2deg(u[3])  # Convert latitude to degrees
-    lon = rad2deg(u[2])  # Convert longitude to degrees
+    alt = Float64(LatLonAlt[3] * 1e-3)  # Convert altitude to km
+    lat = rad2deg(Float64(LatLonAlt[1]))  # Convert latitude to degrees
+    lon = rad2deg(Float64(LatLonAlt[2]))  # Convert longitude to degrees
     position = gram.Position()
     position.height = alt
     position.latitude = lat

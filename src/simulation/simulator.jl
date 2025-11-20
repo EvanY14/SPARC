@@ -10,7 +10,7 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
     A = p.area
     μ = p.μ
     R = p.R # Planetary radius
-    p.β = p.β_function(u, p, t) # Bank angle
+    β = p.β # Bank angle
     r = R + h # Distance from planet center
 
     # calculate wind-relative velocity
@@ -32,8 +32,8 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
     cos_ψ = cos(ψ)
     tan_θ = tan(θ)
     cos_θ = cos(θ)
-    sin_β = sin(p.β)
-    cos_β = cos(p.β)
+    sin_β = sin(β)
+    cos_β = cos(β)
 
     g = μ / r^2 # Gravitational acceleration
 

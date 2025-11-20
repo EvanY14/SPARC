@@ -1,6 +1,7 @@
 function altitude_condition(u, t, integrator)
     h = u[1]
-    return h - integrator.p.target_altitude
+    target_altitude = integrator.p.target_states.altitude
+    return h - target_altitude
 end
 
 function altitude_effect!(integrator)
@@ -13,7 +14,8 @@ function atmospheric_density_effect!(integrator)
     # println(typeof(integrator))
     density_function = integrator.p.atmospheric_density_function
     h = integrator.u[1]
-    integrator.p.atmospheric_density, integrator.p.wind = density_function(integrator)
+    LatLonAlt = (integrator.u[3], integrator.u[2], h)
+    integrator.p.atmospheric_density, integrator.p.wind = density_function(LatLonAlt, integrator.t)
 end
 
 atmospheric_density_callback = DiscreteCallback((u, t, integrator) -> true, atmospheric_density_effect!)
@@ -32,3 +34,9 @@ end
 # 4. BUILD THE CALLBACK
 #    save_everystep=true is the default, but good to be explicit
 saving_callback = SavingCallback(save_func, saved_values, save_everystep=true)
+
+function control_callback_effect!(integrator)
+    integrator.p.β = integrator.p.control_function(integrator)
+end
+
+control_callback = PeriodicCallback(control_callback_effect!, 1.0) # Update every 1 second
