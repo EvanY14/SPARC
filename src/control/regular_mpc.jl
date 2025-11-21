@@ -160,7 +160,8 @@ function mpc(integrator)
     # --- 1. Define Scaling Constants ---
     H_SCALE = 1e5   # Reference Altitude (100 km)
     V_SCALE = 1e3   # Reference Velocity (1 km/s)
-    T_SCALE = 100.0 # Reference Time (100 s) 
+    # T_SCALE = 100.0 # Reference Time (100 s) 
+    T_SCALE = 1.0
     
     # Derived Scaled Rate Units (used for dynamics)
     DH_SCALE_RATE     = H_SCALE / T_SCALE     # 1000.0 m/s
@@ -190,24 +191,25 @@ function mpc(integrator)
     target_γ = target_states.flight_path_angle
 
     # Atmosphere and Horizon
-    polyfit_coeffs = SVector{21, Float64}(Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002])
-    polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(polyfit_coeffs)
-    n = 200         # Prediction horizon steps
-    time_step = 0.5 # seconds
+    # polyfit_coeffs = SVector{21, Float64}(Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002])
+    # polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(polyfit_coeffs)
+    exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
+    n = 20         # Prediction horizon steps
+    time_step = 1.0 # seconds
     # --- 3. Define Scaled JuMP Variables ---
     @variables(model, begin
-    # h_c is scaled by H_SCALE (1e5)
-    0 ≤ h_c[1:n] ≤ 1.5                # scaled altitude (~0 to 150 km)
-    ϕ_c[1:n]
-    deg2rad(-89) ≤ θ_c[1:n] ≤ deg2rad(89)
-    # v_c is scaled by V_SCALE (1e3)
-    (1e-4 / V_SCALE) ≤ v_c[1:n] ≤ 10.0   # scaled velocity (~0 to 10 km/s)
-    deg2rad(-89) ≤ γ_c[1:n] ≤ deg2rad(89)
-    ψ_c[1:n]
-    # Δt is scaled by T_SCALE (100 s)
-    (time_step*1e-9 / T_SCALE) <= Δt[1:n] <= (time_step*5.0 / T_SCALE)
-    deg2rad(-89) ≤ β_c[1:n] ≤ deg2rad(89) # bank angle (unscaled)
-end)
+        # h_c is scaled by H_SCALE (1e5)
+        0 ≤ h_c[1:n] ≤ 1.5                # scaled altitude (~0 to 150 km)
+        ϕ_c[1:n]
+        deg2rad(-89) ≤ θ_c[1:n] ≤ deg2rad(89)
+        # v_c is scaled by V_SCALE (1e3)
+        (1e-4 / V_SCALE) ≤ v_c[1:n] ≤ 10.0   # scaled velocity (~0 to 10 km/s)
+        deg2rad(-89) ≤ γ_c[1:n] ≤ deg2rad(89)
+        ψ_c[1:n]
+        # Δt is scaled by T_SCALE (100 s)
+        (1e-9 / T_SCALE) <= Δt[1:n] <= (1.0 / T_SCALE) # Max timestep of 1 second
+        deg2rad(-89) ≤ β_c[1:n] ≤ deg2rad(89) # bank angle (unscaled)
+    end)
     if integrator.p.optimization_states.h_c != zeros(0)
         optim_states = integrator.p.optimization_states
         set_start_value.(h_c, optim_states.h_c)
@@ -219,6 +221,26 @@ end)
         set_start_value.(β_c, optim_states.β_c)
         set_start_value.(Δt, optim_states.Δt_c)
         set_attribute(model, "warm_start_init_point", "yes")
+    else
+        # Initial guess (Must use scaled state variables h/H_SCALE and v/V_SCALE)
+        x_s_scaled = [h / H_SCALE, ϕ, θ, v / V_SCALE, γ, ψ, integrator.p.β, 0.0 / T_SCALE]
+        x_t_scaled = [target_altitude, target_longitude, target_latitude, target_velocity, target_γ, ψ, integrator.p.β, (n*time_step) / T_SCALE]
+        interp_linear = Interpolations.LinearInterpolation([1, n], [x_s_scaled, x_t_scaled])
+        
+        # The initial guess must be a vector of all variables in the order they were declared
+        initial_guess_vars = [h_c; ϕ_c; θ_c; v_c; γ_c; ψ_c; β_c; Δt]
+        for j in 1:n
+            start_vals = interp_linear(j)
+            set_start_value(h_c[j], start_vals[1])
+            set_start_value(ϕ_c[j], start_vals[2])
+            set_start_value(θ_c[j], start_vals[3])
+            set_start_value(v_c[j], start_vals[4])
+            set_start_value(γ_c[j], start_vals[5])
+            set_start_value(ψ_c[j], start_vals[6])
+            set_start_value(β_c[j], start_vals[7])
+        end
+        # Set the initial guess for time steps (assumes constant time step)
+        set_start_value.(Δt, time_step / T_SCALE)
     end
     # Fix initial conditions using scaled current state
     fix(h_c[1], h / H_SCALE; force = true)
@@ -227,33 +249,15 @@ end)
     fix(v_c[1], v / V_SCALE; force = true)
     fix(γ_c[1], γ; force = true)
     fix(ψ_c[1], ψ; force = true)
+    # fix(β_c[1], integrator.p.β; force = true)
 
     # Fix final conditions using scaled targets
     # fix(h_c[n], target_altitude; force = true)
     # fix(v_c[n], target_velocity; force = true)
     # fix(γ_c[n], target_γ; force = true)
 
-    # Initial guess (Must use scaled state variables h/H_SCALE and v/V_SCALE)
-    x_s_scaled = [h / H_SCALE, ϕ, θ, v / V_SCALE, γ, ψ, integrator.p.β, 0.0 / T_SCALE]
-    x_t_scaled = [target_altitude, target_longitude, target_latitude, target_velocity, target_γ, ψ, 0.0, (n*time_step) / T_SCALE]
-    interp_linear = Interpolations.LinearInterpolation([1, n], [x_s_scaled, x_t_scaled])
     
-    # The initial guess must be a vector of all variables in the order they were declared
-    initial_guess_vars = [h_c; ϕ_c; θ_c; v_c; γ_c; ψ_c; β_c; Δt]
     
-    # Set the initial guess for state variables
-    for j in 1:n
-        start_vals = interp_linear(j)
-        set_start_value(h_c[j], start_vals[1])
-        set_start_value(ϕ_c[j], start_vals[2])
-        set_start_value(θ_c[j], start_vals[3])
-        set_start_value(v_c[j], start_vals[4])
-        set_start_value(γ_c[j], start_vals[5])
-        set_start_value(ψ_c[j], start_vals[6])
-        set_start_value(β_c[j], start_vals[7])
-    end
-    # Set the initial guess for time steps (assumes constant time step)
-    set_start_value.(Δt, time_step / T_SCALE)
 
 
     # --- 4. Define Unscaled State Expressions for Physics ---
@@ -263,7 +267,7 @@ end)
     # Expressions (use unscaled h and v for physics)
     @expression(model, c_D[j=1:n], integrator.p.Cd)
     @expression(model, c_L[j=1:n], integrator.p.Cl)
-    @expression(model, ρ[j=1:n], atmospheric_density((θ_c[j], ϕ_c[j], h_unscaled[j]), (j-1)*time_step, polyfit_atmosphere)[1])
+    @expression(model, ρ[j=1:n], atmospheric_density((θ_c[j], ϕ_c[j], h_unscaled[j]), (j-1)*time_step, exponential_atmosphere)[1])
     
     # D and L are in Newtons (unscaled)
     @expression(model, D[j=1:n], 0.5 * c_D[j] * S * ρ[j] * v_unscaled[j]^2)
@@ -308,12 +312,12 @@ end)
     for j in 2:n
         i = j - 1  # index of previous knot
         # The equation now correctly connects scaled state (LHS) with scaled rate (RHS)
-        @constraint(model, h_c[j] == h_c[i] + 0.5 * Δt[i] * (δh_scaled[j] + δh_scaled[i]))
-        @constraint(model, ϕ_c[j] == ϕ_c[i] + 0.5 * Δt[i] * (δϕ_scaled[j] + δϕ_scaled[i]))
-        @constraint(model, θ_c[j] == θ_c[i] + 0.5 * Δt[i] * (δθ_scaled[j] + δθ_scaled[i]))
-        @constraint(model, v_c[j] == v_c[i] + 0.5 * Δt[i] * (δv_scaled[j] + δv_scaled[i]))
-        @constraint(model, γ_c[j] == γ_c[i] + 0.5 * Δt[i] * (δγ_scaled[j] + δγ_scaled[i]))
-        @constraint(model, ψ_c[j] == ψ_c[i] + 0.5 * Δt[i] * (δψ_scaled[j] + δψ_scaled[i]))
+        @constraint(model, h_c[j] == h_c[i] + 0.5 * time_step * (δh_scaled[j] + δh_scaled[i]))
+        @constraint(model, ϕ_c[j] == ϕ_c[i] + 0.5 * time_step * (δϕ_scaled[j] + δϕ_scaled[i]))
+        @constraint(model, θ_c[j] == θ_c[i] + 0.5 * time_step * (δθ_scaled[j] + δθ_scaled[i]))
+        @constraint(model, v_c[j] == v_c[i] + 0.5 * time_step * (δv_scaled[j] + δv_scaled[i]))
+        @constraint(model, γ_c[j] == γ_c[i] + 0.5 * time_step * (δγ_scaled[j] + δγ_scaled[i]))
+        @constraint(model, ψ_c[j] == ψ_c[i] + 0.5 * time_step * (δψ_scaled[j] + δψ_scaled[i]))
     end
 
     # --- 7. Objective Function (Unscaled angles are okay) ---
@@ -327,12 +331,15 @@ end)
     @objective(model, Min, miss_distance)
 
     # --- 8. Solve ---
-    # set_silent(model)
+    set_silent(model)
     # set_attribute(model, "max_iter", 50) # Increased max_iter for better convergence
+    # set_attribute(model, "tol", 1e-4)
+    # set_attribute(model, "acceptable_tol", 1e-3)
+    # set_attribute(model, "acceptable_iter", 5) # Number of additional iterations to search after acceptable_tol is met
     optimize!(model)
 
     # --- 9. Extract and Return Unscaled Control ---
-    β_opt = value.(β_c)[1]
+    β_opt = value.(β_c)[2]
 
     # Save to integrator parameters for logging
     integrator.p.optimization_states = OptimizationStates(
