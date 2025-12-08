@@ -2,7 +2,7 @@ using LinearAlgebra
 using DifferentialEquations
 using StaticArrays
 
-function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLParams, t::Float64)
+function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64)
     h, ϕ, θ, v, γ, ψ = u
     m = p.mass
     Cd = p.Cd
@@ -36,6 +36,7 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
     cos_β = cos(β)
 
     g = μ / r^2 # Gravitational acceleration
+    heat_rate = 0.5 * p.atmospheric_density * v_rel^3 # Convective heat rate (W/m^2)
 
     du[1] = (v * sin_γ) #  h_dot
     du[2] = (v/r) * cos_γ * sin_ψ / cos_θ # ϕ_dot (longitude)
@@ -43,4 +44,5 @@ function edl_dynamics(du::MVector{6, Float64}, u::MVector{6, Float64}, p::EDLPar
     du[4] = (-drag / m - g * sin_γ) # v_dot
     du[5] = (lift/(m*v) * cos_β) + cos_γ*(v/r - g/v) # γ_dot (flight path angle)
     du[6] = (lift * sin_β) / (m * v * cos_γ) + (v * cos_γ * sin_ψ * tan_θ) / r # ψ_dot (azimuth)
+    du[7] = heat_rate # heat rate (W/m^2)
 end

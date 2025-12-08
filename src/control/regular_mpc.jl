@@ -1,161 +1,3 @@
-# function mpc(integrator)
-#     # Scaling constants
-#     const H_SCALE = 1e5  # m
-#     const V_SCALE = 1e3  # m/s
-#     const T_SCALE = 100.0 # s (Choose 100 or 250s, whatever is appropriate for your total time)
-#     const R_E_SCALED = Rₑ / H_SCALE # 63.78 
-
-#     user_options = ()
-#     model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
-#     h, ϕ, θ, v, γ, ψ = integrator.u
-#     # Normalize h and v for numerical stability
-#     h /= H_SCALE
-#     v /= V_SCALE
-
-#     # Get parameters
-#     m = integrator.p.mass
-#     target_states = integrator.p.target_states
-#     target_altitude = target_states.altitude / H_SCALE # Scale altitude for numerical stability
-#     target_longitude = target_states.longitude
-#     target_latitude = target_states.latitude
-#     target_velocity = target_states.velocity / V_SCALE # Scale velocity for numerical stability
-#     target_γ = target_states.flight_path_angle
-    
-#     # Build atmosphere model
-#     polyfit_coeffs = Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002]
-#     polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(SVector{length(polyfit_coeffs), Float64}(polyfit_coeffs))
-#     n = 500  # Prediction horizon steps
-#     time_step = 0.5  # seconds
-
-#     # Variables are defined in scaled units (e.g., h_c[j] is the altitude in 100km units)
-#     @variables(model, begin
-#         0 ≤ h_c[1:n]                   # scaled altitude (e.g., 0.0 to 1.5)
-#         ϕ_c[1:n]
-#         deg2rad(-89) ≤ θ_c[1:n] ≤ deg2rad(89)
-#         1e-4 / V_SCALE ≤ v_c[1:n]     # scaled velocity (e.g., 0.1 to 10.0)
-#         deg2rad(-89) ≤ γ_c[1:n] ≤ deg2rad(89)
-#         ψ_c[1:n]
-#         deg2rad(-89) ≤ β_c[1:n] ≤ deg2rad(89)  # bank angle (rad)
-#         # Scale Δt by T_SCALE
-#         (time_step*1e-9 / T_SCALE) <= Δt[1:n] <= (time_step*5.0 / T_SCALE)
-#     end)
-
-#     # Fix initial conditions using scaled inputs
-#     fix(h_c[1], h / H_SCALE; force = true)
-#     fix(v_c[1], v / V_SCALE; force = true)
-
-#     # Fix final conditions using scaled targets
-#     fix(h_c[n], target_altitude / H_SCALE; force = true)
-#     fix(v_c[n], target_velocity / V_SCALE; force = true)
-#     # @variables(model, begin
-#     #     0 ≤ h_c[1:n]                # altitude (m)
-#     #     ϕ_c[1:n]                # longitude (rad)
-#     #     deg2rad(-89) ≤ θ_c[1:n] ≤ deg2rad(89)  # latitude (rad)
-#     #     1e-4 ≤ v_c[1:n]                # velocity (ft/sec) / 1e4
-#     #     deg2rad(-89) ≤ γ_c[1:n] ≤ deg2rad(89)  # flight path angle (rad)
-#     #     ψ_c[1:n]                # azimuth (rad)
-#     #     # deg2rad(-90) ≤ α[1:n] ≤ deg2rad(90)  # angle of attack (rad)
-#     #     deg2rad(-89) ≤ β_c[1:n] ≤ deg2rad(89)  # bank angle (rad)
-#     #     #        3.5 ≤       Δt[1:n] ≤ 4.5          # time step (sec)
-#     #     time_step*1e-9 <= Δt[1:n] <= time_step*5.0        # time step (sec)
-#     # end)
-
-#     # Fix initial conditions
-#     # fix(h_c[1], h; force = true)
-#     fix(ϕ_c[1], ϕ; force = true)
-#     fix(θ_c[1], θ; force = true)
-#     # fix(v_c[1], v; force = true)
-#     fix(γ_c[1], γ; force = true)
-#     fix(ψ_c[1], ψ; force = true)
-
-#     # Fix final conditions
-#     # fix(h_c[n], target_altitude; force = true)
-#     # fix(v_c[n], target_velocity; force = true)
-#     # fix(γ_c[n], target_γ; force = true)
-
-#     β = integrator.p.β # Current bank angle
-#     # Initial guess: linear interpolation between boundary conditions
-#     x_s = [h, ϕ, θ, v, γ, ψ, β, 0.0]
-#     x_t = [target_altitude, target_longitude, target_latitude, target_velocity, target_γ, ψ, 0.0, n*time_step]
-#     interp_linear = Interpolations.LinearInterpolation([1, n], [x_s, x_t])
-#     initial_guess = mapreduce(transpose, vcat, interp_linear.(1:n))
-#     set_start_value.(all_variables(model), vec(initial_guess))
-
-#     # Helper functions
-#     density_function = integrator.p.atmospheric_density_function
-#     μ = integrator.p.μ / (H_SCALE * V_SCALE^2)  # Scaled gravitational parameter
-#     Rₑ = integrator.p.R / H_SCALE
-#     S = integrator.p.area 
-#     @expression(model, c_D[j=1:n], integrator.p.Cd)
-#     @expression(model, c_L[j=1:n], integrator.p.Cl)
-#     # Dynamics constraints
-#     # Unscaled state variables from scaled JuMP variables
-#     @expression(model, h_unscaled[j=1:n], h_c[j] * H_SCALE)
-#     @expression(model, v_unscaled[j=1:n], v_c[j] * V_SCALE)
-
-#     # Recalculate physical expressions using unscaled values
-#     @expression(model, ρ[j=1:n], atmospheric_density((θ_c[j], ϕ_c[j], h_unscaled[j]), (j-1)*time_step, polyfit_atmosphere)[1])
-
-#     # Drag and Lift (D and L must be in Newtons)
-#     @expression(model, D[j=1:n], 0.5 * c_D[j] * S * ρ[j] * v_unscaled[j]^2)
-#     @expression(model, L[j=1:n], 0.5 * c_L[j] * S * ρ[j] * v_unscaled[j]^2)
-
-#     # Radius and Gravity (r and g must be in unscaled units)
-#     @expression(model, r[j=1:n], Rₑ + h_unscaled[j])
-#     @expression(model, g[j=1:n], μ / r[j]^2)
-#     # @expression(model, ρ[j=1:n], atmospheric_density((θ_c[j], ϕ_c[j], h_c[j]), (j-1)*time_step, polyfit_atmosphere)[1])
-#     # @expression(model, D[j=1:n], 0.5 * c_D[j] * S * ρ[j] * v_c[j]^2)
-#     # @expression(model, L[j=1:n], 0.5 * c_L[j] * S * ρ[j] * v_c[j]^2)
-#     # @expression(model, r[j=1:n], Rₑ + h_c[j])
-#     # @expression(model, g[j=1:n], μ / r[j]^2)
-
-#     @expression(model, δh[j=1:n], v_unscaled[j] * sin(γ_c[j]))
-#     @expression(model, δϕ[j=1:n], (v_unscaled[j] / r[j]) * cos(γ_c[j]) * sin(ψ_c[j]) / cos(θ_c[j]))
-#     @expression(model, δθ[j=1:n], (v_unscaled[j] / r[j]) * cos(γ_c[j]) * cos(ψ_c[j]))
-#     @expression(model, δv[j=1:n], -(D[j] / m) - g[j] * sin(γ_c[j]))
-#     @expression(
-#         model,
-#         δγ[j=1:n],
-#         (L[j] / (m * v_unscaled[j])) * cos(β_c[j]) +
-#         cos(γ_c[j]) * ((v_unscaled[j] / r[j]) - (g[j] / v_unscaled[j]))
-#     )
-#     @expression(
-#         model,
-#         δψ[j=1:n],
-#         (1 / (m * v_unscaled[j] * cos(γ_c[j]))) * L[j] * sin(β_c[j]) +
-#         (v_unscaled[j] / (r[j] * cos(θ_c[j]))) * cos(γ_c[j]) * sin(ψ_c[j]) * sin(θ_c[j])
-#     )
-
-#     for j in 2:n
-#         i = j - 1  # index of previous knot
-#         # Trapezoidal integration
-#         @constraint(model, h_c[j] == h_c[i] + 0.5 * Δt[i] * (δh[j] + δh[i]))
-#         @constraint(model, ϕ_c[j] == ϕ_c[i] + 0.5 * Δt[i] * (δϕ[j] + δϕ[i]))
-#         @constraint(model, θ_c[j] == θ_c[i] + 0.5 * Δt[i] * (δθ[j] + δθ[i]))
-#         @constraint(model, v_c[j] == v_c[i] + 0.5 * Δt[i] * (δv[j] + δv[i]))
-#         @constraint(model, γ_c[j] == γ_c[i] + 0.5 * Δt[i] * (δγ[j] + δγ[i]))
-#         @constraint(model, ψ_c[j] == ψ_c[i] + 0.5 * Δt[i] * (δψ[j] + δψ[i]))
-#     end
-
-#     # Objective: minimize miss distance (lat, lon) at final time
-#     final_latitude = θ_c[n]
-#     final_longitude = ϕ_c[n]
-#     @expression(model, lat_error, final_latitude - target_latitude)
-#     @expression(model, lon_error, final_longitude - target_longitude)
-#     @expression(model, miss_distance, lat_error^2 + lon_error^2)
-#     @objective(model, Min, miss_distance)
-
-#     # set_silent(model)  # Hide solver's verbose output
-#     # set_attribute(model, "max_iter", 10) # Set solver tolerance
-#     optimize!(model)  # Solve for the control and state
-
-#     # Extract optimal control input at the next time step
-#     β_opt = value.(β_c)[1]
-#     return β_opt
-# end
-
-# using JuMP, Ipopt, StaticArrays, Interpolations
-
 function mpc(integrator)
     # --- 1. Define Scaling Constants ---
     H_SCALE = 1e5   # Reference Altitude (100 km)
@@ -171,8 +13,14 @@ function mpc(integrator)
     # --- 2. Initial Setup and Scaled Inputs ---
     user_options = ()
     model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
-    h, ϕ, θ, v, γ, ψ = integrator.u # Current unscaled state
-
+    h, ϕ, θ, v, γ, ψ, q = integrator.u # Current unscaled state
+    h_s = h / H_SCALE
+    ϕ_s = ϕ
+    θ_s = θ
+    v_s = v / V_SCALE
+    γ_s = γ
+    ψ_s = ψ
+    q_s = q
     # Get parameters
     m = integrator.p.mass
     Rₑ = integrator.p.R
@@ -182,161 +30,268 @@ function mpc(integrator)
     # Scale physical constants to match H_SCALE
     R_E_SCALED = Rₑ / H_SCALE
     
-    # Scale target states
-    target_states = integrator.p.target_states
-    target_altitude = target_states.altitude / H_SCALE
-    target_velocity = target_states.velocity / V_SCALE
-    target_longitude = target_states.longitude
-    target_latitude = target_states.latitude
-    target_γ = target_states.flight_path_angle
+    
 
     # Atmosphere and Horizon
     # polyfit_coeffs = SVector{21, Float64}(Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002])
     # polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(polyfit_coeffs)
-    exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
+    # exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
+    polyfit_coefficients = [-8.278592174668491e-43, 1.2598495030132498e-38, -8.634065871212132e-35, 3.5185552646901455e-31, -9.480197229347404e-28, 1.7753104600795092e-24, -2.3622107295909874e-21, 2.2393603867716714e-18, -1.487031340144351e-15, 6.592111911218399e-13, -1.714014789283248e-10, 1.3556252797088945e-08, 5.196239221937857e-06, -0.0012393556758398866, -0.0500835105059738, -4.213431227716942]
+    polyfit_exponent = (h) -> polyfit_coefficients[1] * h^15 + polyfit_coefficients[2] * h^14 + polyfit_coefficients[3] * h^13 +
+    polyfit_coefficients[4] * h^12 + polyfit_coefficients[5] * h^11 + polyfit_coefficients[6] * h^10 +
+    polyfit_coefficients[7] * h^9 + polyfit_coefficients[8] * h^8 + polyfit_coefficients[9] * h^7 +
+    polyfit_coefficients[10] * h^6 + polyfit_coefficients[11] * h^5 + polyfit_coefficients[12] * h^4 +
+    polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16]
     n = 20         # Prediction horizon steps
-    time_step = 1.0 # seconds
+    time_step = 0.2 # seconds
+
+    # Scale target states
+    optimal_states = integrator.p.nominal_trajectory
+    trajectory_times = integrator.t * ones(n) .+ cumsum(value.(time_step * ones(n)))
+    nominal_alts = optimal_states[1](trajectory_times)
+    nominal_lons = optimal_states[2](trajectory_times)
+    nominal_lats = optimal_states[3](trajectory_times)
+    nominal_vels = optimal_states[4](trajectory_times)
+    nominal_γs = optimal_states[5](trajectory_times)
+    nominal_azimuths = optimal_states[6](trajectory_times)
+    h_t = nominal_alts[end] / H_SCALE
+    v_t = nominal_vels[end] / V_SCALE
+    γ_t = nominal_γs[end]
+    α_s = deg2rad(0.0)  # Initial angle of attack (rad)
+    β_s = integrator.p.β
     # --- 3. Define Scaled JuMP Variables ---
+    model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
+
     @variables(model, begin
-        # h_c is scaled by H_SCALE (1e5)
-        0 ≤ h_c[1:n] ≤ 1.5                # scaled altitude (~0 to 150 km)
-        ϕ_c[1:n]
-        deg2rad(-89) ≤ θ_c[1:n] ≤ deg2rad(89)
-        # v_c is scaled by V_SCALE (1e3)
-        (1e-4 / V_SCALE) ≤ v_c[1:n] ≤ 10.0   # scaled velocity (~0 to 10 km/s)
-        deg2rad(-89) ≤ γ_c[1:n] ≤ deg2rad(89)
-        ψ_c[1:n]
-        # Δt is scaled by T_SCALE (100 s)
-        (1e-9 / T_SCALE) <= Δt[1:n] <= (1.0 / T_SCALE) # Max timestep of 1 second
-        deg2rad(-89) ≤ β_c[1:n] ≤ deg2rad(89) # bank angle (unscaled)
-    end)
-    if integrator.p.optimization_states.h_c != zeros(0)
-        optim_states = integrator.p.optimization_states
-        set_start_value.(h_c, optim_states.h_c)
-        set_start_value.(ϕ_c, optim_states.ϕ_c)
-        set_start_value.(θ_c, optim_states.θ_c)
-        set_start_value.(v_c, optim_states.v_c)
-        set_start_value.(γ_c, optim_states.γ_c)
-        set_start_value.(ψ_c, optim_states.ψ_c)
-        set_start_value.(β_c, optim_states.β_c)
-        set_start_value.(Δt, optim_states.Δt_c)
-        set_attribute(model, "warm_start_init_point", "yes")
-    else
-        # Initial guess (Must use scaled state variables h/H_SCALE and v/V_SCALE)
-        x_s_scaled = [h / H_SCALE, ϕ, θ, v / V_SCALE, γ, ψ, integrator.p.β, 0.0 / T_SCALE]
-        x_t_scaled = [target_altitude, target_longitude, target_latitude, target_velocity, target_γ, ψ, integrator.p.β, (n*time_step) / T_SCALE]
-        interp_linear = Interpolations.LinearInterpolation([1, n], [x_s_scaled, x_t_scaled])
-        
-        # The initial guess must be a vector of all variables in the order they were declared
-        initial_guess_vars = [h_c; ϕ_c; θ_c; v_c; γ_c; ψ_c; β_c; Δt]
-        for j in 1:n
-            start_vals = interp_linear(j)
-            set_start_value(h_c[j], start_vals[1])
-            set_start_value(ϕ_c[j], start_vals[2])
-            set_start_value(θ_c[j], start_vals[3])
-            set_start_value(v_c[j], start_vals[4])
-            set_start_value(γ_c[j], start_vals[5])
-            set_start_value(ψ_c[j], start_vals[6])
-            set_start_value(β_c[j], start_vals[7])
-        end
-        # Set the initial guess for time steps (assumes constant time step)
-        set_start_value.(Δt, time_step / T_SCALE)
-    end
-    # Fix initial conditions using scaled current state
-    fix(h_c[1], h / H_SCALE; force = true)
-    fix(ϕ_c[1], ϕ; force = true)
-    fix(θ_c[1], θ; force = true)
-    fix(v_c[1], v / V_SCALE; force = true)
-    fix(γ_c[1], γ; force = true)
-    fix(ψ_c[1], ψ; force = true)
-    # fix(β_c[1], integrator.p.β; force = true)
+        0 ≤ scaled_h[1:n]                # altitude (ft) / 1e5
+        ϕ[1:n]                # longitude (rad)
+        deg2rad(-89) ≤ θ[1:n] ≤ deg2rad(89)  # latitude (rad)
+        1e-4 ≤ scaled_v[1:n]                # velocity (ft/sec) / 1e4
+        deg2rad(-89) ≤ γ[1:n] ≤ deg2rad(89)  # flight path angle (rad)
+        ψ[1:n]                # azimuth (rad)
+        deg2rad(-90) ≤ α[1:n] ≤ deg2rad(90)  # angle of attack (rad)
+        deg2rad(-89) ≤ β[1:n] ≤ deg2rad(89)  # bank angle (rad)
+        # 0.1 ≤       Δt[1:n] ≤ 1.0          # time step (sec)
+        0.0 <= q_dot[1:n] <= 269.0               # heat rate (W/m^2)
+        0.0 <= q[1:n] <= 6200.0                  # heat load (J/m^2)
+        # Δt[1:n] == 4.0         # time step (sec)
+    end);
 
-    # Fix final conditions using scaled targets
-    # fix(h_c[n], target_altitude; force = true)
-    # fix(v_c[n], target_velocity; force = true)
-    # fix(γ_c[n], target_γ; force = true)
+    # Fix initial conditions
+    fix(scaled_h[1], h_s; force = true)
+    fix(ϕ[1], ϕ_s; force = true)
+    fix(θ[1], θ_s; force = true)
+    fix(scaled_v[1], v_s; force = true)
+    fix(γ[1], γ_s; force = true)
+    fix(ψ[1], ψ_s; force = true)
+    fix(q_dot[1], 0.0; force = true)
+    fix(q[1], 0.0; force = true)
 
-    
-    
+    # Fix final conditions
+    fix(scaled_h[n], h_t; force = true)
+    # fix(scaled_v[n], v_t; force = true)
+    # fix(γ[n], γ_t; force = true)
+    # fix(θ[n], deg2rad(-4.5); force = true)  # Target latitude in radians
+    # fix(ϕ[n], deg2rad(137.4); force = true)  # Target longitude in radians
 
+    # Initial guess: linear interpolation between boundary conditions
+    x_s = [h_s, ϕ_s, θ_s, v_s, γ_s, ψ_s, α_s, β_s, time_step, 0.5 * integrator.p.atmospheric_density * (v_s*V_SCALE)^3, q_s]
+    x_t = [h_t, ϕ_s, θ_s, v_t, γ_t, ψ_s, α_s, β_s, time_step, 269.0, 6200.0]
+    interp_linear = Interpolations.LinearInterpolation([1, n], [x_s, x_t])
+    initial_guess = mapreduce(transpose, vcat, interp_linear.(1:n))
+    set_start_value.(all_variables(model), vec(initial_guess))
 
-    # --- 4. Define Unscaled State Expressions for Physics ---
-    @expression(model, h_unscaled[j=1:n], h_c[j] * H_SCALE)
-    @expression(model, v_unscaled[j=1:n], v_c[j] * V_SCALE)
-    
-    # Expressions (use unscaled h and v for physics)
-    @expression(model, c_D[j=1:n], integrator.p.Cd)
-    @expression(model, c_L[j=1:n], integrator.p.Cl)
-    @expression(model, ρ[j=1:n], atmospheric_density((θ_c[j], ϕ_c[j], h_unscaled[j]), (j-1)*time_step, exponential_atmosphere)[1])
-    
-    # D and L are in Newtons (unscaled)
-    @expression(model, D[j=1:n], 0.5 * c_D[j] * S * ρ[j] * v_unscaled[j]^2)
-    @expression(model, L[j=1:n], 0.5 * c_L[j] * S * ρ[j] * v_unscaled[j]^2)
-    
-    # r and g are unscaled
-    @expression(model, r[j=1:n], Rₑ + h_unscaled[j])
+    # Functions to restore `h` and `v` to their true scale
+    @expression(model, h[j=1:n], scaled_h[j] * 1e5)
+    @expression(model, v[j=1:n], scaled_v[j] * 1e4)
+
+    # Helper functions
+    @expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # Convert altitude to km
+    @expression(model, D[j=1:n], 0.5 * cD * S * ρ[j] * v[j]^2)
+    @expression(model, L[j=1:n], 0.5 * cL * S * ρ[j] * v[j]^2)
+    @expression(model, r[j=1:n], Rₑ + h[j])
     @expression(model, g[j=1:n], μ / r[j]^2)
-    
-    # --- 5. Define Scaled Dynamics (RHS) ---
-    # The RHS (rate of change) expressions are divided by their corresponding scaled rate units
-    
-    # δh (m/s) -> Scaled by DH_SCALE_RATE (1000 m/s)
-    @expression(model, δh_scaled[j=1:n], (v_unscaled[j] * sin(γ_c[j])) / DH_SCALE_RATE)
-    
-    # δϕ (rad/s) -> Scaled by DANGLE_SCALE_RATE (0.01 rad/s)
-    @expression(model, δϕ_scaled[j=1:n], ((v_unscaled[j] / r[j]) * cos(γ_c[j]) * sin(ψ_c[j]) / cos(θ_c[j])) / DANGLE_SCALE_RATE)
-    
-    # δθ (rad/s) -> Scaled by DANGLE_SCALE_RATE (0.01 rad/s)
-    @expression(model, δθ_scaled[j=1:n], ((v_unscaled[j] / r[j]) * cos(γ_c[j]) * cos(ψ_c[j])) / DANGLE_SCALE_RATE)
-    
-    # δv (m/s^2) -> Scaled by DV_SCALE_RATE (10 m/s^2)
-    @expression(model, δv_scaled[j=1:n], (-(D[j] / m) - g[j] * sin(γ_c[j])) / DV_SCALE_RATE)
-    
-    # δγ (rad/s) -> Scaled by DANGLE_SCALE_RATE (0.01 rad/s)
+
+    # Motion of the vehicle as a differential-algebraic system of equations (DAEs)
+    @expression(model, δh[j=1:n], v[j] * sin(γ[j]))
+    @expression(model, δϕ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * sin(ψ[j]) / cos(θ[j]))
+    @expression(model, δθ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * cos(ψ[j]))
+    @expression(model, δv[j=1:n], -(D[j] / m) - g[j] * sin(γ[j]))
     @expression(
         model,
-        δγ_scaled[j=1:n],
-        (((L[j] / (m * v_unscaled[j])) * cos(β_c[j]) +
-        cos(γ_c[j]) * ((v_unscaled[j] / r[j]) - (g[j] / v_unscaled[j])))) / DANGLE_SCALE_RATE
+        δγ[j=1:n],
+        (L[j] / (m * v[j])) * cos(β[j]) +
+        cos(γ[j]) * ((v[j] / r[j]) - (g[j] / v[j]))
     )
-    
-    # δψ (rad/s) -> Scaled by DANGLE_SCALE_RATE (0.01 rad/s)
     @expression(
         model,
-        δψ_scaled[j=1:n],
-        ((1 / (m * v_unscaled[j] * cos(γ_c[j]))) * L[j] * sin(β_c[j]) +
-        (v_unscaled[j] / (r[j] * cos(θ_c[j]))) * cos(γ_c[j]) * sin(ψ_c[j]) * sin(θ_c[j])) / DANGLE_SCALE_RATE
+        δψ[j=1:n],
+        (1 / (m * v[j] * cos(γ[j]))) * L[j] * sin(β[j]) +
+        (v[j] / (r[j] * cos(θ[j]))) * cos(γ[j]) * sin(ψ[j]) * sin(θ[j])
     )
 
-    # --- 6. Scaled Trapezoidal Constraints ---
+    # System dynamics
+    if integration_rule == "rk4"
+        # Precompute RK4 k-values for all knots
+        @expression(model, k1_dh[j=1:n], δh[j])
+        @expression(model, k1_dϕ[j=1:n], δϕ[j])
+        @expression(model, k1_dθ[j=1:n], δθ[j])
+        @expression(model, k1_dv[j=1:n], δv[j])
+        @expression(model, k1_dγ[j=1:n], δγ[j])
+        @expression(model, k1_dψ[j=1:n], δψ[j])
+
+        @expression(
+            model,
+            k2_dh[j=1:n],
+            δh[j] + 0.5 * time_step * k1_dh[j]
+        )
+        @expression(
+            model,
+            k2_dϕ[j=1:n],
+            δϕ[j] + 0.5 * time_step * k1_dϕ[j]
+        )
+        @expression(
+            model,
+            k2_dθ[j=1:n],
+            δθ[j] + 0.5 * time_step * k1_dθ[j]
+        )
+        @expression(
+            model,
+            k2_dv[j=1:n],
+            δv[j] + 0.5 * time_step * k1_dv[j]
+        )
+        @expression(
+            model,
+            k2_dγ[j=1:n],
+            δγ[j] + 0.5 * time_step * k1_dγ[j]
+        )
+        @expression(
+            model,
+            k2_dψ[j=1:n],
+            δψ[j] + 0.5 * time_step * k1_dψ[j]
+        )
+
+        @expression(
+            model,
+            k3_dh[j=1:n],
+            δh[j] + 0.5 * time_step * k2_dh[j]
+        )
+        @expression(
+            model,
+            k3_dϕ[j=1:n],
+            δϕ[j] + 0.5 * time_step * k2_dϕ[j]
+        )
+        @expression(
+            model,
+            k3_dθ[j=1:n],
+            δθ[j] + 0.5 * time_step * k2_dθ[j]
+        )
+        @expression(
+            model,
+            k3_dv[j=1:n],
+            δv[j] + 0.5 * time_step * k2_dv[j]
+        )
+        @expression(
+            model,
+            k3_dγ[j=1:n],
+            δγ[j] + 0.5 * time_step * k2_dγ[j]
+        )
+        @expression(
+            model,
+            k3_dψ[j=1:n],
+            δψ[j] + 0.5 * time_step * k2_dψ[j]
+        )
+        @expression(
+            model,
+            k4_dh[j=1:n],
+            δh[j] + time_step * k3_dh[j]
+        )
+        @expression(
+            model,
+            k4_dϕ[j=1:n],
+            δϕ[j] + time_step * k3_dϕ[j]
+        )
+        @expression(
+            model,
+            k4_dθ[j=1:n],
+            δθ[j] + time_step * k3_dθ[j]
+        )
+        @expression(
+            model,
+            k4_dv[j=1:n],
+            δv[j] + time_step * k3_dv[j]
+        )
+        @expression(
+            model,
+            k4_dγ[j=1:n],
+            δγ[j] + time_step * k3_dγ[j]
+        )
+        @expression(
+            model,
+            k4_dψ[j=1:n],
+            δψ[j] + time_step * k3_dψ[j]
+        )
+    end
+    # Dynamics constraints
     for j in 2:n
         i = j - 1  # index of previous knot
-        # The equation now correctly connects scaled state (LHS) with scaled rate (RHS)
-        @constraint(model, h_c[j] == h_c[i] + 0.5 * time_step * (δh_scaled[j] + δh_scaled[i]))
-        @constraint(model, ϕ_c[j] == ϕ_c[i] + 0.5 * time_step * (δϕ_scaled[j] + δϕ_scaled[i]))
-        @constraint(model, θ_c[j] == θ_c[i] + 0.5 * time_step * (δθ_scaled[j] + δθ_scaled[i]))
-        @constraint(model, v_c[j] == v_c[i] + 0.5 * time_step * (δv_scaled[j] + δv_scaled[i]))
-        @constraint(model, γ_c[j] == γ_c[i] + 0.5 * time_step * (δγ_scaled[j] + δγ_scaled[i]))
-        @constraint(model, ψ_c[j] == ψ_c[i] + 0.5 * time_step * (δψ_scaled[j] + δψ_scaled[i]))
+
+        if integration_rule == "rectangular"
+            # Rectangular integration
+            @constraint(model, h[j] == h[i] + time_step * δh[i])
+            @constraint(model, ϕ[j] == ϕ[i] + time_step * δϕ[i])
+            @constraint(model, θ[j] == θ[i] + time_step * δθ[i])
+            @constraint(model, v[j] == v[i] + time_step * δv[i])
+            @constraint(model, γ[j] == γ[i] + time_step * δγ[i])
+            @constraint(model, ψ[j] == ψ[i] + time_step * δψ[i])
+        elseif integration_rule == "trapezoidal"
+            # Trapezoidal integration
+            @constraint(model, h[j] == h[i] + 0.5 * time_step * (δh[j] + δh[i]))
+            @constraint(model, ϕ[j] == ϕ[i] + 0.5 * time_step * (δϕ[j] + δϕ[i]))
+            @constraint(model, θ[j] == θ[i] + 0.5 * time_step * (δθ[j] + δθ[i]))
+            @constraint(model, v[j] == v[i] + 0.5 * time_step * (δv[j] + δv[i]))
+            @constraint(model, γ[j] == γ[i] + 0.5 * time_step * (δγ[j] + δγ[i]))
+            @constraint(model, ψ[j] == ψ[i] + 0.5 * time_step * (δψ[j] + δψ[i]))
+            
+        elseif integration_rule == "rk4"
+            # Runge-Kutta 4th order integration from step i to j
+            @constraint(model, h[j] == h[i] + (time_step / 6) * (k1_dh[i] + 2 * k2_dh[i] + 2 * k3_dh[i] + k4_dh[i]))
+            @constraint(model, ϕ[j] == ϕ[i] + (time_step / 6) * (k1_dϕ[i] + 2 * k2_dϕ[i] + 2 * k3_dϕ[i] + k4_dϕ[i]))
+            @constraint(model, θ[j] == θ[i] + (time_step / 6) * (k1_dθ[i] + 2 * k2_dθ[i] + 2 * k3_dθ[i] + k4_dθ[i]))
+            @constraint(model, v[j] == v[i] + (time_step / 6) * (k1_dv[i] + 2 * k2_dv[i] + 2 * k3_dv[i] + k4_dv[i]))
+            @constraint(model, γ[j] == γ[i] + (time_step / 6) * (k1_dγ[i] + 2 * k2_dγ[i] + 2 * k3_dγ[i] + k4_dγ[i]))
+            @constraint(model, ψ[j] == ψ[i] + (time_step / 6) * (k1_dψ[i] + 2 * k2_dψ[i] + 2 * k3_dψ[i] + k4_dψ[i]))
+            @constraint(model, q[j] == q[i] + q_dot[j]*time_step)
+        else
+            @error "Unexpected integration rule '$(integration_rule)'"
+        end
     end
 
-    # --- 7. Objective Function (Unscaled angles are okay) ---
-    final_latitude = θ_c[n]
-    final_longitude = ϕ_c[n]
-    # final_altitude = h_c[n]
-    @expression(model, lat_error, final_latitude - target_latitude)
-    @expression(model, lon_error, final_longitude - target_longitude)
-    # @expression(model, alt_error, final_altitude - target_altitude)
-    @expression(model, miss_distance, lat_error^2 + lon_error^2)
-    @objective(model, Min, miss_distance)
+    # Heating constraints
+    # Objective: Reach target latitude and longitude
+    @expression(model, alt_cost, (nominal_alts .- h[1:n]) / H_SCALE)
+    @expression(model, lon_cost, nominal_lons .- ϕ[1:n])
+    @expression(model, lat_cost, nominal_lats .- θ[1:n])
+    @expression(model, vel_cost, (nominal_vels .- v[1:n]) / V_SCALE)
+    @expression(model, γ_cost, nominal_γs .- γ[1:n])
+    @expression(model, azimuth_cost, nominal_azimuths .- ψ[1:n])
+    @objective(model, Min, sum(alt_cost.^2 + lon_cost.^2 + lat_cost.^2 + vel_cost.^2 + γ_cost.^2 + azimuth_cost.^2))
+    # target_latitude = deg2rad(-4.5)  # Target latitude in radians
+    # @constraint(model,target_latitude - deg2rad(0.1) <= θ[n] <= target_latitude + deg2rad(0.1))
+    # @expression(model, latitude_error, θ[n] - target_latitude)
+    # target_longitude = deg2rad(137.4)  # Target longitude in radians
+    # @constraint(model,target_longitude - deg2rad(0.1) <= ϕ[n] <= target_longitude + deg2rad(0.1))
+    # @constraint(model, γ[n] >= deg2rad(-6.0))
+    # @expression(model, longitude_error, ϕ[n] - target_longitude)
+    # @expression(model, altitude_error, h[n] / 1e5 - h_t)  # Target altitude in meters
+    # @expression(model, velocity_error, v[n] / 1e4 - v_t) # Target velocity in m/s
+    # @expression(model, flight_path_angle_error, γ[n] - γ_t) # Target flight path angle in radians
+    # @objective(model, Min, sum(Δt))
 
-    # --- 8. Solve ---
-    set_silent(model)
-    # set_attribute(model, "max_iter", 50) # Increased max_iter for better convergence
-    # set_attribute(model, "tol", 1e-4)
-    # set_attribute(model, "acceptable_tol", 1e-3)
-    # set_attribute(model, "acceptable_iter", 5) # Number of additional iterations to search after acceptable_tol is met
-    optimize!(model)
+    # set_silent(model)  # Hide solver's verbose output
+    set_attribute(model, "tol", 1e-6)  # Set solver tolerance
+    optimize!(model)  # Solve for the control and state
+    assert_is_solved_and_feasible(model)
 
     # --- 9. Extract and Return Unscaled Control ---
     β_opt = value.(β_c)[2]
@@ -350,7 +305,7 @@ function mpc(integrator)
         γ_c = value.(γ_c),
         ψ_c = value.(ψ_c),
         β_c = value.(β_c),
-        Δt_c = value.(Δt) * T_SCALE
+        # Δt_c = value.(Δt) * T_SCALE
     )
     return β_opt
 end

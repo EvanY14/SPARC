@@ -20,7 +20,7 @@ end
 
 atmospheric_density_callback = DiscreteCallback((u, t, integrator) -> true, atmospheric_density_effect!)
 
-SavedValueType = Tuple{Float64, Float64}
+SavedValueType = Tuple{Float64, Float64, Float64}  # (density, bank angle, heat rate)
 saved_values = SavedValues(Float64, SavedValueType)
 
 # 3. DEFINE THE "SAVE" FUNCTION
@@ -28,7 +28,8 @@ saved_values = SavedValues(Float64, SavedValueType)
 function save_func(u, t, integrator)
     density = integrator.p.atmospheric_density
     β = integrator.p.β
-    return (density, β)
+    heat_rate = 0.5 * density * (u[4])^3
+    return (density, β, heat_rate)
 end
 
 # 4. BUILD THE CALLBACK

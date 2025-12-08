@@ -1,6 +1,7 @@
 module ModelTypes
     using StaticArrays
     using PythonCall
+    using Interpolations
 
     export EDLParams, EDLCache, TargetStates, OptimizationStates
     export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere 
@@ -35,7 +36,7 @@ module ModelTypes
         γ_c::Vector{Float64} = zeros(0)
         ψ_c::Vector{Float64} = zeros(0)
         β_c::Vector{Float64} = zeros(0)
-        Δt_c::Vector{Float64} = zeros(0)
+        # Δt_c::Vector{Float64} = zeros(0)
     end
     @kwdef mutable struct EDLParams
         mass::Float64 = 0.0
@@ -51,6 +52,7 @@ module ModelTypes
         wind::SVector{3, Float64} = SVector{3, Float64}(0.0, 0.0, 0.0)  # Current wind vector
         target_states::TargetStates = TargetStates()
         optimization_states::OptimizationStates = OptimizationStates()
+        nominal_trajectory::SVector{6, AbstractInterpolation} = SVector{6, AbstractInterpolation}(undef, undef, undef, undef, undef, undef)
         cache::EDLCache = EDLCache()
     end
 
