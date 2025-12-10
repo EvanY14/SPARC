@@ -3,7 +3,7 @@ using DifferentialEquations
 using StaticArrays
 
 function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64)
-    h, ϕ, θ, v, γ, ψ = u
+    h, ϕ, θ, v, γ, ψ, q = u
     m = p.mass
     Cd = p.Cd
     Cl = p.Cl
@@ -12,6 +12,9 @@ function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLPar
     R = p.R # Planetary radius
     β = p.β # Bank angle
     r = R + h # Distance from planet center
+    C1 = 8.53e-13 # Constant for convective heat rate calculation
+    n = 0.82958 # Exponent for convective heat rate calculation
+    m_exp = 4.512 # Exponent for convective heat rate calculation
 
     # calculate wind-relative velocity
     wind = p.wind
@@ -22,6 +25,7 @@ function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLPar
     )
     v_rel_vector = v_vector - wind
     v_rel = norm(v_rel_vector)
+    # println("Time: $t s, Altitude: $h m, Velocity: $v m/s, Relative Velocity: $v_rel m/s, Density: $(p.atmospheric_density) kg/m³")
     drag = 0.5 * p.atmospheric_density * v_rel^2 * Cd * A # Drag force
     lift = 0.5 * p.atmospheric_density * v_rel^2 * Cl * A # Lift force
 
@@ -36,8 +40,8 @@ function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLPar
     cos_β = cos(β)
 
     g = μ / r^2 # Gravitational acceleration
-    heat_rate = 0.5 * p.atmospheric_density * v_rel^3 # Convective heat rate (W/m^2)
-
+    heat_rate = C1 * p.atmospheric_density^n * v_rel^m_exp # Convective heat rate (W/m^2)
+    p.cache.q_dot = heat_rate # Store heat rate in cache
     du[1] = (v * sin_γ) #  h_dot
     du[2] = (v/r) * cos_γ * sin_ψ / cos_θ # ϕ_dot (longitude)
     du[3] = (v/r) * cos_γ * cos_ψ # θ_dot (latitude)

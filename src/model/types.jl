@@ -18,6 +18,7 @@ module ModelTypes
     @kwdef mutable struct EDLCache
         atmospheric_density::Float64 = 0.0
         β::Float64 = 0.0
+        q_dot::Float64 = 0.0
     end
 
     @kwdef struct TargetStates

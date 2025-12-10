@@ -28,13 +28,13 @@ saved_values = SavedValues(Float64, SavedValueType)
 function save_func(u, t, integrator)
     density = integrator.p.atmospheric_density
     β = integrator.p.β
-    heat_rate = 0.5 * density * (u[4])^3
+    heat_rate = integrator.p.cache.q_dot
     return (density, β, heat_rate)
 end
 
 # 4. BUILD THE CALLBACK
 #    save_everystep=true is the default, but good to be explicit
-saving_callback = SavingCallback(save_func, saved_values, save_everystep=true)
+saving_callback = SavingCallback(save_func, saved_values, saveat=0.1)
 
 function control_callback_effect!(integrator)
     integrator.p.β = integrator.p.control_function(integrator)

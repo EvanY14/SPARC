@@ -12,11 +12,11 @@ using Interpolations
 gr()
 # Define initial conditions and parameters
 h0 = 125000.0      # Initial altitude in meters
-ϕ0 = deg2rad(126.8)            # Initial longitude in radians
-θ0 = deg2rad(-3.9)            # Initial latitude in radians
+ϕ0 = deg2rad(126.7)            # Initial longitude in radians
+θ0 = deg2rad(-3.93)            # Initial latitude in radians
 v0 = 5845.39         # Initial velocity in m/s
 γ0 = deg2rad(-15.49) # Initial flight path angle in radians
-ψ0 = deg2rad(91.0) # Initial azimuth angle in radians
+ψ0 = deg2rad(90.0) # Initial azimuth angle in radians
 
 u0 = MVector{7, Float64}(h0, ϕ0, θ0, v0, γ0, ψ0, 0.0) # Initial state vector
 tspan = (0.0, 500.0) # Time span for the simulation
@@ -26,11 +26,11 @@ drag_coefficient = 1.46
 lift_coefficient = 0.24*drag_coefficient
 area = 15.904 # m^2
 const μ = 4.2828372e13 # m^3/s^2 for Mars
-R = 3389500.0 # m for Mars
-# β = (u, p, t) -> deg2rad(45.0) # Constant bank angle in radians
+R = 3396200.0 # m for Mars
 optimal_control = CSV.read("optimal_trajectory.csv", DataFrame)
 interp_optimal_control = linear_interpolation(optimal_control.Time_s, optimal_control.BankAngle_deg, extrapolation_bc=Line())
 β = (integrator) -> deg2rad(interp_optimal_control(integrator.t)) # Bank angle function in radians
+# β = (integrator) -> deg2rad(45.0) # Bank angle function in radians
 interp_altitude = linear_interpolation(optimal_control.Time_s, optimal_control.Altitude_100km .* 1e5, extrapolation_bc=Line())
 interp_velocity = linear_interpolation(optimal_control.Time_s, optimal_control.Velocity_1000mps .* 1e3, extrapolation_bc=Line())
 interp_longitude = linear_interpolation(optimal_control.Time_s, optimal_control.Longitude_deg .* (π / 180), extrapolation_bc=Line())
@@ -53,7 +53,7 @@ target_states = TargetStates(altitude=target_altitude, longitude=deg2rad(137.4),
 
 # Define the atmospheric model
 # exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
-gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2024, 1, 1, 0, 0, 0.0))
+gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
 
 # Define integration parameters
 edl_cache = EDLCache()
@@ -66,7 +66,7 @@ callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_call
 # Define the ODE problem
 prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
 # Solve the ODE problem
-sol = solve(prob, Tsit5(), reltol=1e-10, abstol=1e-12, dtmax=0.1)
+sol = solve(prob, Tsit5(), dt=0.1, adaptive=false)#reltol=1e-10, abstol=1e-12,
 # The solution `sol` now contains the state of the system over time
 display(plot(sol.t, getindex.(sol.u, 1) ./ 1e3 , xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", legend=false))
 display(plot(sol.t, getindex.(sol.u, 4) ./ 1e3 , xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", legend=false))
@@ -82,9 +82,10 @@ for i in 1:length(saved_data)
     betas[i] = saved_data[i][2]
     heat_rates[i] = saved_data[i][3]
 end
-println(size(betas))
-println(size(saved_values.t))
-# display(plot(saved_values.t, densities, xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
+# println(size(betas))
+# println(saved_values.t)
+# println(sol.t)
+display(plot(saved_values.t[2:end], densities[2:end], xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
 display(plot(saved_values.t, betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", legend=false))
 heat_rate_plot = plot(saved_values.t, heat_rates, xlabel="Time (s)", ylabel="Convective Heat Rate (W/m²)", title="Convective Heat Rate Profile", legend=false)
 heat_load_plot = plot(sol.t, getindex.(sol.u, 7), xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", legend=false)
@@ -96,7 +97,7 @@ final_longitudes = zeros(num_simulations)
 altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 times = Vector{Vector{Float64}}(undef, num_simulations)
-gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2024, 1, 1, 0, 0, 0.0))
+gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
 edl_params.atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, true)
 @showprogress for sim in 1:num_simulations
     prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
