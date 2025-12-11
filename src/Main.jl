@@ -41,6 +41,9 @@ interp_azimuth = linear_interpolation(optimal_control.Time_s, optimal_control.Az
 times = range(optimal_control.Time_s[1], optimal_control.Time_s[end], length=length(optimal_control.Time_s))
 # Define optimal trajectory at evenly spaced time intervals
 optimal_trajectory = SVector{6, AbstractInterpolation}(interp_altitude, interp_longitude, interp_latitude, interp_velocity, interp_flight_path, interp_azimuth)
+display(plot(optimal_control.Time_s, optimal_control.Altitude_100km .* 1e5 ./ 1e3, xlabel="Time (s)", ylabel="Altitude (km)", title="Optimal Trajectory: Altitude vs Time", legend=false))
+display(plot(optimal_control.Time_s, optimal_control.Velocity_1000mps .* 1e3, xlabel="Time (s)", ylabel="Velocity (m/s)", title="Optimal Trajectory: Velocity vs Time", legend=false))
+display(plot(optimal_control.Longitude_deg, optimal_control.Latitude_deg, xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="Optimal Trajectory: Ground Track", legend=false))
 
 # β = (u, p, t) -> deg2rad(45*sin(t*pi/87)) # Bank angle function in radians
 # β = () -> deg2rad(rand() * 90.0 - 45.0) # Bank angle in radians
@@ -58,7 +61,7 @@ gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime
 # Define integration parameters
 edl_cache = EDLCache()
 optimization_states = OptimizationStates()
-mpc_params = MPCParams{50, 7, 8, 0.1}(n_horizon=20, time_step=0.2, H_SCALE=1.0e5, V_SCALE=1.0e3, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958)
+mpc_params = MPCParams{50, 7, 8, 0.1}(n_horizon=50, time_step=0.1, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
 edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, ssimpc, 0.0, (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), 0.0, SVector{3, Float64}(zeros(3)), target_states, optimization_states, optimal_trajectory, edl_cache, mpc_params)
 # Define callbacks
 callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback, control_callback)
@@ -91,48 +94,48 @@ heat_rate_plot = plot(saved_values.t, heat_rates, xlabel="Time (s)", ylabel="Con
 heat_load_plot = plot(sol.t, getindex.(sol.u, 7), xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", legend=false)
 display(plot(heat_rate_plot, heat_load_plot, layout=(2,1)))
 # Monte Carlo to test atmospheric disturbances
-num_simulations = 1
-final_latitudes = zeros(num_simulations)
-final_longitudes = zeros(num_simulations)
-altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
-velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
-times = Vector{Vector{Float64}}(undef, num_simulations)
-gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
-edl_params.atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, true)
-@showprogress for sim in 1:num_simulations
-    prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
-    sol_mc = solve(prob_mc, Tsit5(), dt=0.5, adaptive=false)
-    altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
-    velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
-    times[sim] = sol_mc.t
-    final_latitudes[sim] = getindex(sol_mc.u[end], 3) * (180 / π)
-    final_longitudes[sim] = getindex(sol_mc.u[end], 2) * (180 / π)
-end
+# num_simulations = 1
+# final_latitudes = zeros(num_simulations)
+# final_longitudes = zeros(num_simulations)
+# altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
+# velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
+# times = Vector{Vector{Float64}}(undef, num_simulations)
+# gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
+# edl_params.atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, true)
+# @showprogress for sim in 1:num_simulations
+#     prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
+#     sol_mc = solve(prob_mc, Tsit5(), dt=0.5, adaptive=false)
+#     altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
+#     velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
+#     times[sim] = sol_mc.t
+#     final_latitudes[sim] = getindex(sol_mc.u[end], 3) * (180 / π)
+#     final_longitudes[sim] = getindex(sol_mc.u[end], 2) * (180 / π)
+# end
 
-# Plot MC results
-# Altitude profiles
-plt1 = plot(title="Monte Carlo Simulations: Altitude Profiles", xlabel="Time (s)", ylabel="Altitude (km)", legend=true)
-for i in 1:num_simulations
-    plot!(plt1, times[i], altitude_profiles[i], color=:grey, alpha=0.3, label=false)
-end
-# Plot nominal trajectory
-plot!(plt1, sol.t, getindex.(sol.u, 1) ./ 1e3, color=:red, label="Nominal Trajectory")
-display(plt1)
-savefig(plt1, "monte_carlo_altitude_profiles.pdf")
+# # Plot MC results
+# # Altitude profiles
+# plt1 = plot(title="Monte Carlo Simulations: Altitude Profiles", xlabel="Time (s)", ylabel="Altitude (km)", legend=true)
+# for i in 1:num_simulations
+#     plot!(plt1, times[i], altitude_profiles[i], color=:grey, alpha=0.3, label=false)
+# end
+# # Plot nominal trajectory
+# plot!(plt1, sol.t, getindex.(sol.u, 1) ./ 1e3, color=:red, label="Nominal Trajectory")
+# display(plt1)
+# savefig(plt1, "monte_carlo_altitude_profiles.pdf")
 
-# Velocity profiles
-plt2 = plot(title="Monte Carlo Simulations: Velocity Profiles", xlabel="Time (s)", ylabel="Velocity (km/s)", legend=true)
-for i in 1:num_simulations
-    plot!(plt2, times[i], velocity_profiles[i], color=:grey, alpha=0.3, label=false)
-end
-# Plot nominal trajectory
-plot!(plt2, sol.t, getindex.(sol.u, 4) ./ 1e3, color=:red, label="Nominal Trajectory")
-display(plt2)
-savefig(plt2, "monte_carlo_velocity_profiles.pdf")
+# # Velocity profiles
+# plt2 = plot(title="Monte Carlo Simulations: Velocity Profiles", xlabel="Time (s)", ylabel="Velocity (km/s)", legend=true)
+# for i in 1:num_simulations
+#     plot!(plt2, times[i], velocity_profiles[i], color=:grey, alpha=0.3, label=false)
+# end
+# # Plot nominal trajectory
+# plot!(plt2, sol.t, getindex.(sol.u, 4) ./ 1e3, color=:red, label="Nominal Trajectory")
+# display(plt2)
+# savefig(plt2, "monte_carlo_velocity_profiles.pdf")
 
-# Final landing locations
-plt3 = plot(final_longitudes, final_latitudes, seriestype=:scatter, xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="Monte Carlo Simulations: Final Landing Locations", legend=true, label="Landing Locations", alpha=0.6)
-plot!(plt3, [getindex(sol.u[end], 2) * (180 / π)], [getindex(sol.u[end], 3) * (180 / π)], seriestype=:scatter, color=:red, markershape=:star5, markersize=8, label="Nominal Landing Location")
-plot!(plt3, [rad2deg(target_states.longitude)], [rad2deg(target_states.latitude)], seriestype=:scatter, color=:blue, markershape=:diamond, markersize=8, label="Target Location")
-display(plt3)
-savefig(plt3, "monte_carlo_final_landing_locations.pdf")
+# # Final landing locations
+# plt3 = plot(final_longitudes, final_latitudes, seriestype=:scatter, xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="Monte Carlo Simulations: Final Landing Locations", legend=true, label="Landing Locations", alpha=0.6)
+# plot!(plt3, [getindex(sol.u[end], 2) * (180 / π)], [getindex(sol.u[end], 3) * (180 / π)], seriestype=:scatter, color=:red, markershape=:star5, markersize=8, label="Nominal Landing Location")
+# plot!(plt3, [rad2deg(target_states.longitude)], [rad2deg(target_states.latitude)], seriestype=:scatter, color=:blue, markershape=:diamond, markersize=8, label="Target Location")
+# display(plt3)
+# savefig(plt3, "monte_carlo_final_landing_locations.pdf")

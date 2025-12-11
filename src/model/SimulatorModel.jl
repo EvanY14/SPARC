@@ -6,6 +6,7 @@ module SimulatorModel
     using JuMP
     using Ipopt
     using Interpolations
+    using Statistics
 
     export edl_dynamics 
     export atmospheric_density

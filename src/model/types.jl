@@ -2,6 +2,7 @@ module ModelTypes
     using StaticArrays
     using PythonCall
     using Interpolations
+    using DataStructures
 
     export EDLParams, MPCParams, EDLCache, TargetStates, OptimizationStates
     export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere 
@@ -56,6 +57,7 @@ module ModelTypes
         omega::MMatrix{n_rf, n_states_plus_control, Float64} = MMatrix{n_rf, n_states_plus_control, Float64}(randn(n_rf, n_states_plus_control)) * kernel_std
         b::MVector{n_rf, Float64} = MVector{n_rf, Float64}(2π * rand(n_rf))
         learning_rate::Float64 = 0.01
+        prev_alphas::Deque{MMatrix{n_states, n_rf, Float64}} = Deque{MMatrix{n_states, n_rf, Float64}}()
     end
 
     @kwdef mutable struct EDLParams

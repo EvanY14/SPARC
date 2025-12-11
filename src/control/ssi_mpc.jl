@@ -6,10 +6,10 @@ function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, 
     A = p.area
     μ = p.μ
     R = p.R # Planetary radius
-    β = β # Bank angle
+    # β = β # Bank angle
     r = R + h # Distance from planet center
     C1 = 8.53e-13 # Constant for convective heat rate calculation
-    n = 0.82958 # Exponent for convective heat rate calculation
+    n_exp = 0.82958 # Exponent for convective heat rate calculation
     m_exp = 4.512 # Exponent for convective heat rate calculation
 
     polyfit_coefficients = SVector{16, Float64}(-8.278592174668491e-43, 1.2598495030132498e-38, -8.634065871212132e-35, 3.5185552646901455e-31, -9.480197229347404e-28, 1.7753104600795092e-24, -2.3622107295909874e-21, 2.2393603867716714e-18, -1.487031340144351e-15, 6.592111911218399e-13, -1.714014789283248e-10, 1.3556252797088945e-08, 5.196239221937857e-06, -0.0012393556758398866, -0.0500835105059738, -4.213431227716942)
@@ -35,7 +35,7 @@ function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, 
     cos_β = cos(β)
 
     g = μ / r^2 # Gravitational acceleration
-    heat_rate = C1 * density^n * v^m_exp # Convective heat rate (W/m^2)
+    heat_rate = C1 * density^n_exp * v^m_exp # Convective heat rate (W/m^2)
     # p.cache.q_dot = heat_rate # Store heat rate in cache
     du[1] = (v * sin_γ) #  h_dot
     du[2] = (v/r) * cos_γ * sin_ψ / cos_θ # ϕ_dot (longitude)
@@ -49,10 +49,10 @@ end
 function ssimpc(integrator)
     # Placeholder for SSI-MPC implementation
      # --- 1. Define Scaling Constants ---
-    H_SCALE = 1e5   # Reference Altitude (100 km)
-    V_SCALE = 1e4   # Reference Velocity (1 km/s)
+    H_SCALE = integrator.p.mpc_params.H_SCALE   # Reference Altitude (100 km)
+    V_SCALE = integrator.p.mpc_params.V_SCALE   # Reference Velocity (1 km/s)
     # T_SCALE = 100.0 # Reference Time (100 s) 
-    T_SCALE = 1.0
+    T_SCALE = integrator.p.mpc_params.T_SCALE
     
     # Derived Scaled Rate Units (used for dynamics)
     DH_SCALE_RATE     = H_SCALE / T_SCALE     # 1000.0 m/s
@@ -97,15 +97,16 @@ function ssimpc(integrator)
     ρ0 = 0.02  # surface density in kg/m^3
     H_scale_height = 11.1e3 # scale height in meters
     C1 = 8.53e-13 # Constant for convective heat rate calculation
-    n_exp = 0.82958 # Exponent for convective heat rate calculation
-    m_exp = 4.512 # Exponent for convective heat rate calculation
+    n_exp = integrator.p.mpc_params.n_exp # Exponent for convective heat rate calculation
+    m_exp = integrator.p.mpc_params.m_exp # Exponent for convective heat rate calculation
 
-    n = 50         # Prediction horizon steps
-    time_step = 0.2 # seconds
+    n = integrator.p.mpc_params.n_horizon         # Prediction horizon steps
+    time_step = integrator.p.mpc_params.time_step # seconds
 
     # Scale target states
     optimal_states = integrator.p.nominal_trajectory
     trajectory_times = integrator.t * ones(n) .+ cumsum(value.(time_step * ones(n)))
+    # println("Trajectory times: ", trajectory_times)
     nominal_alts = optimal_states[1](trajectory_times)
     nominal_lons = optimal_states[2](trajectory_times)
     nominal_lats = optimal_states[3](trajectory_times)
@@ -181,7 +182,8 @@ function ssimpc(integrator)
     # rf_numeric = 1 / √(n_rf) * cos(wz_plus_b)
     alpha_in = integrator.p.mpc_params.alpha
     # alpha_in = ones(size(alpha_in)) * 0.01 # Zero out disturbance for testing
-    println("disturbance: ", alpha_in * (1 / √(n_rf) * cos.(ω * SVector{n_states_plus_control, Float64}(integrator.u..., integrator.p.β) + b)))
+    
+    println("Time: $(integrator.t), disturbance: ", alpha_in * (1 / √(n_rf) * cos.(ω * SVector{n_states_plus_control, Float64}(integrator.u..., integrator.p.β) + b)))
     # println("q_dot: ", q_dot)
     # println("h: ", h_s)
     # println("v: ", v_s)
@@ -245,7 +247,7 @@ function ssimpc(integrator)
     @expression(model, vel_cost, (nominal_vels .- v[1:n]) / V_SCALE)
     @expression(model, γ_cost, nominal_γs .- γ[1:n])
     @expression(model, azimuth_cost, nominal_azimuths .- ψ[1:n])
-    @objective(model, Min, sum(10.0 * alt_cost.^2 + 10.0 * lon_cost.^2 + 10.0 * lat_cost.^2 + vel_cost.^2 + γ_cost.^2 + azimuth_cost.^2) + sum(0.1 * β[2:n].^2))
+    @objective(model, Min, sum(10.0 * alt_cost.^2 + 50.0 * lon_cost.^2 + 50.0 * lat_cost.^2 + 10.0 * vel_cost.^2 + γ_cost.^2 + azimuth_cost.^2) + sum(0.1 * β[2:n].^2))
     # target_latitude = deg2rad(-4.5)  # Target latitude in radians
     # @constraint(model,target_latitude - deg2rad(0.1) <= θ[n] <= target_latitude + deg2rad(0.1))
     # @expression(model, latitude_error, θ[n] - target_latitude)
@@ -259,7 +261,7 @@ function ssimpc(integrator)
     # @objective(model, Min, sum(Δt))
 
     set_silent(model)  # Hide solver's verbose output
-    set_attribute(model, "tol", 1e-6)  # Set solver tolerance
+    # set_attribute(model, "tol", 1e-6)  # Set solver tolerance
     optimize!(model)  # Solve for the control and state
     assert_is_solved_and_feasible(model)
 
@@ -285,7 +287,7 @@ function update_step!(integrator)
     # Placeholder for SSI-MPC step update
     n_rf::Int64 = size(integrator.p.mpc_params.alpha)[2]
     n_states_plus_control::Int64 = length(integrator.u) + 1
-    dt::Float64 = integrator.dt
+    dt::Float64 = 1.0
     ω::MMatrix{n_rf, n_states_plus_control, Float64} = integrator.p.mpc_params.omega
     b::MVector{n_rf, Float64} = integrator.p.mpc_params.b
 
@@ -315,6 +317,17 @@ function update_step!(integrator)
 
     ∇A = -2.0 * (h_meas - pred_target) * rf_numeric'
     alpha_out = alpha_in - integrator.p.mpc_params.learning_rate * ∇A
+
+    if length(integrator.p.mpc_params.prev_alphas) < 50
+        push!(integrator.p.mpc_params.prev_alphas, alpha_out)
+    else
+        stds = dropdims(std(stack(integrator.p.mpc_params.prev_alphas); dims=3); dims=3) # find the std dev across previous alphas
+        means = dropdims(mean(stack(integrator.p.mpc_params.prev_alphas); dims=3); dims=3) # find the mean across previous alphas
+        alpha_out .= clamp.(alpha_out, means .- 3.0 .* stds, means .+ 3.0 .* stds)
+        push!(integrator.p.mpc_params.prev_alphas, alpha_out)
+        popfirst!(integrator.p.mpc_params.prev_alphas)
+    end
+
     integrator.p.mpc_params.alpha .= alpha_out
     integrator.p.mpc_params.prev_x .= [integrator.u..., integrator.p.β]
     # integrator.p.mpc_params.alpha .= zeros(size(integrator.p.mpc_params.alpha))
