@@ -58,7 +58,7 @@ gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime
 # Define integration parameters
 edl_cache = EDLCache()
 optimization_states = OptimizationStates()
-mpc_params = MPCParams{50, 8, 1.0}(n_horizon=20, time_step=0.2, H_SCALE=1.0e5, V_SCALE=1.0e3, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958)
+mpc_params = MPCParams{50, 7, 8, 0.1}(n_horizon=20, time_step=0.2, H_SCALE=1.0e5, V_SCALE=1.0e3, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958)
 edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, ssimpc, 0.0, (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), 0.0, SVector{3, Float64}(zeros(3)), target_states, optimization_states, optimal_trajectory, edl_cache, mpc_params)
 # Define callbacks
 callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback, control_callback)

@@ -1,4 +1,4 @@
-function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64)
+function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64, β::Float64)
     h, ϕ, θ, v, γ, ψ, q = u
     m = p.mass
     Cd = p.Cd
@@ -6,7 +6,7 @@ function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, 
     A = p.area
     μ = p.μ
     R = p.R # Planetary radius
-    β = p.β # Bank angle
+    β = β # Bank angle
     r = R + h # Distance from planet center
     C1 = 8.53e-13 # Constant for convective heat rate calculation
     n = 0.82958 # Exponent for convective heat rate calculation
@@ -35,7 +35,7 @@ function edl_dynamics_ssi_mpc!(du::MVector{7, Float64}, u::MVector{7, Float64}, 
     cos_β = cos(β)
 
     g = μ / r^2 # Gravitational acceleration
-    heat_rate = C1 * p.atmospheric_density^n * v_rel^m_exp # Convective heat rate (W/m^2)
+    heat_rate = C1 * density^n * v^m_exp # Convective heat rate (W/m^2)
     # p.cache.q_dot = heat_rate # Store heat rate in cache
     du[1] = (v * sin_γ) #  h_dot
     du[2] = (v/r) * cos_γ * sin_ψ / cos_θ # ϕ_dot (longitude)
@@ -82,8 +82,8 @@ function ssimpc(integrator)
     # Scale physical constants to match H_SCALE
     R_E_SCALED = Rₑ / H_SCALE
     
+    update_step!(integrator)
     
-
     # Atmosphere and Horizon
     # polyfit_coeffs = SVector{21, Float64}(Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002])
     # polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(polyfit_coeffs)
@@ -94,6 +94,8 @@ function ssimpc(integrator)
     polyfit_coefficients[7] * h^9 + polyfit_coefficients[8] * h^8 + polyfit_coefficients[9] * h^7 +
     polyfit_coefficients[10] * h^6 + polyfit_coefficients[11] * h^5 + polyfit_coefficients[12] * h^4 +
     polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16]
+    ρ0 = 0.02  # surface density in kg/m^3
+    H_scale_height = 11.1e3 # scale height in meters
     C1 = 8.53e-13 # Constant for convective heat rate calculation
     n_exp = 0.82958 # Exponent for convective heat rate calculation
     m_exp = 4.512 # Exponent for convective heat rate calculation
@@ -117,7 +119,7 @@ function ssimpc(integrator)
     β_s = integrator.p.β
     # --- 3. Define Scaled JuMP Variables ---
     model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
-
+    
     @variables(model, begin
         0 ≤ scaled_h[1:n]                # altitude (ft) / 1e5
         ϕ[1:n]                # longitude (rad)
@@ -141,7 +143,7 @@ function ssimpc(integrator)
     fix(γ[1], γ_s; force = true)
     fix(ψ[1], ψ_s; force = true)
     # fix(q_dot[1], 0.0; force = true)
-    fix(q[1], 0.0; force = true)
+    fix(q[1], q_s; force = true)
 
     # Fix final conditions
     # fix(scaled_h[n], h_t; force = true)
@@ -171,138 +173,42 @@ function ssimpc(integrator)
 
     # Motion of the vehicle as a differential-algebraic system of equations (DAEs)
     n_states_plus_control = length(integrator.u) + 1
-    n_rf = length(integrator.p.mpc_params.alpha)
+    n_rf = size(integrator.p.mpc_params.alpha)[2]
     ω = integrator.p.mpc_params.omega
     b = integrator.p.mpc_params.b
     # Z = SVector{n_states + 1, Float64}(integrator.u..., integrator.p.β)...)
     # wz_plus_b::SVector{n_rf, Float64} = ω * Z + b
     # rf_numeric = 1 / √(n_rf) * cos(wz_plus_b)
     alpha_in = integrator.p.mpc_params.alpha
+    # alpha_in = ones(size(alpha_in)) * 0.01 # Zero out disturbance for testing
+    println("disturbance: ", alpha_in * (1 / √(n_rf) * cos.(ω * SVector{n_states_plus_control, Float64}(integrator.u..., integrator.p.β) + b)))
+    # println("q_dot: ", q_dot)
+    # println("h: ", h_s)
+    # println("v: ", v_s)
+    # println("γ: ", γ_s)
+    # println("ψ: ", ψ_s)
     @expression(model, Z[j=1:n], [h[j], ϕ[j], θ[j], v[j], γ[j], ψ[j], q[j], β[j]])
     @expression(model, wz_plus_b[j=1:n], ω * Z[j] + b)
     @expression(model, rf_numeric[j=1:n], 1 / √(n_rf) * cos.(wz_plus_b[j]))
-    @expression(model, disturbance[j=1:n, l=1:n_states_plus_control-1], dot(alpha_in, rf_numeric[j]))
-    @expression(model, δh[j=1:n], v[j] * sin(γ[j]) + disturbance[j, 1])
-    @expression(model, δϕ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * sin(ψ[j]) / cos(θ[j]) + disturbance[j, 2])
-    @expression(model, δθ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * cos(ψ[j]) + disturbance[j, 3])
-    @expression(model, δv[j=1:n], -(D[j] / m) - g[j] * sin(γ[j]) + disturbance[j, 4])
+    @expression(model, disturbance[j=1:n, k=1:n_states_plus_control-1], (alpha_in * rf_numeric[j])[k])
+    @expression(model, δh[j=1:n], v[j] * sin(γ[j]) + disturbance[j,1])
+    @expression(model, δϕ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * sin(ψ[j]) / cos(θ[j]) + disturbance[j,2])
+    @expression(model, δθ[j=1:n], (v[j] / r[j]) * cos(γ[j]) * cos(ψ[j]) + disturbance[j,3])
+    @expression(model, δv[j=1:n], -(D[j] / m) - g[j] * sin(γ[j]) + disturbance[j,4])
     @expression(
         model,
         δγ[j=1:n],
         (L[j] / (m * v[j])) * cos(β[j]) +
         cos(γ[j]) * ((v[j] / r[j]) - (g[j] / v[j])) + 
-        disturbance[j, 5]
+        disturbance[j,5]
     )
     @expression(
         model,
         δψ[j=1:n],
         (1 / (m * v[j] * cos(γ[j]))) * L[j] * sin(β[j]) +
         (v[j] / (r[j] * cos(θ[j]))) * cos(γ[j]) * sin(ψ[j]) * sin(θ[j]) + 
-        disturbance[j, 6]
+        disturbance[j,6]
     )
-
-    # System dynamics
-    if integration_rule == "rk4"
-        # Precompute RK4 k-values for all knots
-        @expression(model, k1_dh[j=1:n], δh[j])
-        @expression(model, k1_dϕ[j=1:n], δϕ[j])
-        @expression(model, k1_dθ[j=1:n], δθ[j])
-        @expression(model, k1_dv[j=1:n], δv[j])
-        @expression(model, k1_dγ[j=1:n], δγ[j])
-        @expression(model, k1_dψ[j=1:n], δψ[j])
-
-        @expression(
-            model,
-            k2_dh[j=1:n],
-            δh[j] + 0.5 * time_step * k1_dh[j]
-        )
-        @expression(
-            model,
-            k2_dϕ[j=1:n],
-            δϕ[j] + 0.5 * time_step * k1_dϕ[j]
-        )
-        @expression(
-            model,
-            k2_dθ[j=1:n],
-            δθ[j] + 0.5 * time_step * k1_dθ[j]
-        )
-        @expression(
-            model,
-            k2_dv[j=1:n],
-            δv[j] + 0.5 * time_step * k1_dv[j]
-        )
-        @expression(
-            model,
-            k2_dγ[j=1:n],
-            δγ[j] + 0.5 * time_step * k1_dγ[j]
-        )
-        @expression(
-            model,
-            k2_dψ[j=1:n],
-            δψ[j] + 0.5 * time_step * k1_dψ[j]
-        )
-
-        @expression(
-            model,
-            k3_dh[j=1:n],
-            δh[j] + 0.5 * time_step * k2_dh[j]
-        )
-        @expression(
-            model,
-            k3_dϕ[j=1:n],
-            δϕ[j] + 0.5 * time_step * k2_dϕ[j]
-        )
-        @expression(
-            model,
-            k3_dθ[j=1:n],
-            δθ[j] + 0.5 * time_step * k2_dθ[j]
-        )
-        @expression(
-            model,
-            k3_dv[j=1:n],
-            δv[j] + 0.5 * time_step * k2_dv[j]
-        )
-        @expression(
-            model,
-            k3_dγ[j=1:n],
-            δγ[j] + 0.5 * time_step * k2_dγ[j]
-        )
-        @expression(
-            model,
-            k3_dψ[j=1:n],
-            δψ[j] + 0.5 * time_step * k2_dψ[j]
-        )
-        @expression(
-            model,
-            k4_dh[j=1:n],
-            δh[j] + time_step * k3_dh[j]
-        )
-        @expression(
-            model,
-            k4_dϕ[j=1:n],
-            δϕ[j] + time_step * k3_dϕ[j]
-        )
-        @expression(
-            model,
-            k4_dθ[j=1:n],
-            δθ[j] + time_step * k3_dθ[j]
-        )
-        @expression(
-            model,
-            k4_dv[j=1:n],
-            δv[j] + time_step * k3_dv[j]
-        )
-        @expression(
-            model,
-            k4_dγ[j=1:n],
-            δγ[j] + time_step * k3_dγ[j]
-        )
-        @expression(
-            model,
-            k4_dψ[j=1:n],
-            δψ[j] + time_step * k3_dψ[j]
-        )
-    end
 
     # Dynamics constraints
     for j in 2:n
@@ -324,15 +230,6 @@ function ssimpc(integrator)
             @constraint(model, v[j] == v[i] + 0.5 * time_step * (δv[j] + δv[i]))
             @constraint(model, γ[j] == γ[i] + 0.5 * time_step * (δγ[j] + δγ[i]))
             @constraint(model, ψ[j] == ψ[i] + 0.5 * time_step * (δψ[j] + δψ[i]))
-            
-        elseif integration_rule == "rk4"
-            # Runge-Kutta 4th order integration from step i to j
-            @constraint(model, h[j] == h[i] + (time_step / 6) * (k1_dh[i] + 2 * k2_dh[i] + 2 * k3_dh[i] + k4_dh[i]))
-            @constraint(model, ϕ[j] == ϕ[i] + (time_step / 6) * (k1_dϕ[i] + 2 * k2_dϕ[i] + 2 * k3_dϕ[i] + k4_dϕ[i]))
-            @constraint(model, θ[j] == θ[i] + (time_step / 6) * (k1_dθ[i] + 2 * k2_dθ[i] + 2 * k3_dθ[i] + k4_dθ[i]))
-            @constraint(model, v[j] == v[i] + (time_step / 6) * (k1_dv[i] + 2 * k2_dv[i] + 2 * k3_dv[i] + k4_dv[i]))
-            @constraint(model, γ[j] == γ[i] + (time_step / 6) * (k1_dγ[i] + 2 * k2_dγ[i] + 2 * k3_dγ[i] + k4_dγ[i]))
-            @constraint(model, ψ[j] == ψ[i] + (time_step / 6) * (k1_dψ[i] + 2 * k2_dψ[i] + 2 * k3_dψ[i] + k4_dψ[i]))
         else
             @error "Unexpected integration rule '$(integration_rule)'"
         end
@@ -380,19 +277,20 @@ function ssimpc(integrator)
         β_c = value.(β),
         # Δt_c = value.(Δt) * T_SCALE
     )
+
     return β_opt
 end
 
 function update_step!(integrator)
     # Placeholder for SSI-MPC step update
-    n_rf::Int64 = length(integrator.p.mpc_params.alpha)
-    n_states::Int64 = length(integrator.u) + 1
+    n_rf::Int64 = size(integrator.p.mpc_params.alpha)[2]
+    n_states_plus_control::Int64 = length(integrator.u) + 1
     dt::Float64 = integrator.dt
-    ω::MMatrix{n_rf, n_states, Float64} = integrator.p.mpc_params.omega
+    ω::MMatrix{n_rf, n_states_plus_control, Float64} = integrator.p.mpc_params.omega
     b::MVector{n_rf, Float64} = integrator.p.mpc_params.b
 
-    if integrator.p.prev_x == MVector{n_states, Float64}(zeros(n_states))
-        integrator.p.prev_x .= hcat(integrator.u, integrator.p.β)
+    if integrator.p.mpc_params.prev_x == MVector{n_states_plus_control, Float64}(zeros(n_states_plus_control))
+        integrator.p.mpc_params.prev_x .= MVector{n_states_plus_control, Float64}(integrator.u..., 0.0)
     end
 
     if integrator.dt == 0.0
@@ -400,23 +298,25 @@ function update_step!(integrator)
     end
 
     alpha_in = integrator.p.mpc_params.alpha
-    x_in = integrator.p.prev_x
+    x_in = MVector{7, Float64}(integrator.p.mpc_params.prev_x[1:end-1])
+    u_in = integrator.p.mpc_params.prev_x[end]
 
-    Z = SVector{n_states, Float64}(x_in)
+    Z = SVector{n_states_plus_control, Float64}(integrator.p.mpc_params.prev_x...)
     wz_plus_b::SVector{n_rf, Float64} = ω * Z + b
-    rf_numeric = 1 / √(n_rf) * cos(wz_plus_b)
+    rf_numeric = 1 / √(n_rf) * cos.(wz_plus_b)
 
-    alpha_zero = SMatrix{n_states, n_rf, Float64}(zeros(n_states, n_rf))
-    x_dot_nominal = MVector{n_states, Float64}(zeros(n_states))
-    edl_dynamics_ssi_mpc!(x_dot_nominal, integrator.u, integrator.p, integrator.t)
+    alpha_zero = SMatrix{n_states_plus_control, n_rf, Float64}(zeros(n_states_plus_control, n_rf))
+    x_dot_nominal = MVector{n_states_plus_control-1, Float64}(zeros(n_states_plus_control-1))
+    edl_dynamics_ssi_mpc!(x_dot_nominal, x_in, integrator.p, integrator.t, integrator.p.β)
     x_pred_nominal = x_in + x_dot_nominal * dt
     h_meas = integrator.u - x_pred_nominal
+    # println("Shape of α_in: ", size(alpha_in), " Shape of rf_numeric: ", size(rf_numeric), " dot product size: ", size(alpha_in * rf_numeric))
+    pred_target = alpha_in * rf_numeric
 
-    pred_target = dot(alpha_in, rf_numeric)
-
-    ∇A = -2.0 * (h_meas - pred_target) * rf_numeric
+    ∇A = -2.0 * (h_meas - pred_target) * rf_numeric'
     alpha_out = alpha_in - integrator.p.mpc_params.learning_rate * ∇A
     integrator.p.mpc_params.alpha .= alpha_out
-    integrator.p.prev_x .= integrator.u
-    integrator.p.prev_u = integrator.p.β
+    integrator.p.mpc_params.prev_x .= [integrator.u..., integrator.p.β]
+    # integrator.p.mpc_params.alpha .= zeros(size(integrator.p.mpc_params.alpha))
+    # integrator.p.prev_u = integrator.p.β
 end

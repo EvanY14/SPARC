@@ -92,7 +92,7 @@ function mpc(integrator)
     fix(γ[1], γ_s; force = true)
     fix(ψ[1], ψ_s; force = true)
     # fix(q_dot[1], 0.0; force = true)
-    fix(q[1], 0.0; force = true)
+    fix(q[1], q_s; force = true)
 
     # Fix final conditions
     # fix(scaled_h[n], h_t; force = true)
