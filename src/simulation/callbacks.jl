@@ -40,4 +40,4 @@ function control_callback_effect!(integrator)
     integrator.p.β = integrator.p.control_function(integrator)
 end
 
-control_callback = PeriodicCallback(control_callback_effect!, 1.0) # Update every 1 second
+control_callback = PeriodicCallback(control_callback_effect!, 3.0) # Update every 3 seconds

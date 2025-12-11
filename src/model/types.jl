@@ -3,7 +3,7 @@ module ModelTypes
     using PythonCall
     using Interpolations
 
-    export EDLParams, EDLCache, TargetStates, OptimizationStates
+    export EDLParams, MPCParams, EDLCache, TargetStates, OptimizationStates
     export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere 
     export DateTime
     @kwdef struct DateTime
@@ -39,6 +39,25 @@ module ModelTypes
         β_c::Vector{Float64} = zeros(0)
         # Δt_c::Vector{Float64} = zeros(0)
     end
+
+    @kwdef struct MPCParams{n_rf, n_states_plus_control, kernel_std}
+        n_horizon::Int64 = 0
+        time_step::Float64 = 0.0
+        H_SCALE::Float64 = 0.0
+        V_SCALE::Float64 = 0.0
+        T_SCALE::Float64 = 0.0
+        n_exp::Float64 = 0.0
+        m_exp::Float64 = 0.0
+        prev_x::MVector{n_states_plus_control, Float64} = MVector{n_states_plus_control, Float64}(zeros(n_states_plus_control))
+        # prev_u::Float64 = 0.0
+        input_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
+        target_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
+        alpha::MVector{n_rf, Float64} = MVector{n_rf, Float64}(zeros(n_rf))
+        omega::MMatrix{n_rf, n_states_plus_control, Float64} = MMatrix{n_rf, n_states_plus_control, Float64}(randn(n_rf, n_states_plus_control)) * kernel_std
+        b::MVector{n_rf, Float64} = MVector{n_rf, Float64}(2π * rand(n_rf))
+        learning_rate::Float64 = 0.1
+    end
+
     @kwdef mutable struct EDLParams
         mass::Float64 = 0.0
         Cd::Float64 = 0.0
@@ -55,6 +74,7 @@ module ModelTypes
         optimization_states::OptimizationStates = OptimizationStates()
         nominal_trajectory::SVector{6, AbstractInterpolation} = SVector{6, AbstractInterpolation}(undef, undef, undef, undef, undef, undef)
         cache::EDLCache = EDLCache()
+        mpc_params::MPCParams = MPCParams()
     end
 
     @kwdef struct PolyfitAtmosphere{N}
