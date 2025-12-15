@@ -62,39 +62,39 @@ gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime
 edl_cache = EDLCache()
 optimization_states = OptimizationStates()
 mpc_params = MPCParams{100, 7, 8, 0.1}(n_horizon=50, time_step=0.1, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
-edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, ssimpc, 0.0, 0.0, (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), 0.0, SVector{3, Float64}(zeros(3)), target_states, optimization_states, optimal_trajectory, edl_cache, mpc_params)
+edl_params = EDLParams(mass, drag_coefficient, lift_coefficient, area, μ, R, mpc, 0.0, 0.0, (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), 0.0, SVector{3, Float64}(zeros(3)), target_states, optimization_states, optimal_trajectory, edl_cache, mpc_params)
 # Define callbacks
 callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback, control_callback)
 
 # Define the ODE problem
-# prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
-# # Solve the ODE problem
-# sol = solve(prob, Tsit5(), dt=0.5, adaptive=false)#reltol=1e-10, abstol=1e-12,
-# # The solution `sol` now contains the state of the system over time
-# display(plot(sol.t, getindex.(sol.u, 1) ./ 1e3 , xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", legend=false))
-# display(plot(sol.t, getindex.(sol.u, 4) ./ 1e3 , xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", legend=false))
-# display(plot(getindex.(sol.u, 2) .* (180 / π), getindex.(sol.u, 3) .* (180 / π), xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="EDL Simulation: Ground Track", legend=false))
+prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
+# Solve the ODE problem
+sol = solve(prob, Tsit5(), dt=0.5, adaptive=false)#reltol=1e-10, abstol=1e-12,
+# The solution `sol` now contains the state of the system over time
+display(plot(sol.t, getindex.(sol.u, 1) ./ 1e3 , xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", legend=false))
+display(plot(sol.t, getindex.(sol.u, 4) ./ 1e3 , xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", legend=false))
+display(plot(getindex.(sol.u, 2) .* (180 / π), getindex.(sol.u, 3) .* (180 / π), xlabel="Longitude (deg)", ylabel="Latitude (deg)", title="EDL Simulation: Ground Track", legend=false))
 
-# # Get saved data
-# saved_data = saved_values.saveval
-# densities = zeros(length(saved_data))
-# betas = zeros(length(saved_data))
-# alphas = zeros(length(saved_data))
-# heat_rates = zeros(length(saved_data))
-# for i in 1:length(saved_data)
-#     densities[i] = saved_data[i][1]
-#     betas[i] = saved_data[i][2]
-#     alphas[i] = saved_data[i][3]
-#     heat_rates[i] = saved_data[i][4]
-# end
-# # println(size(betas))
-# # println(saved_values.t)
-# # println(sol.t)
-# display(plot(saved_values.t[2:end], densities[2:end], xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
-# display(plot(saved_values.t, betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", legend=false))
-# heat_rate_plot = plot(saved_values.t, heat_rates, xlabel="Time (s)", ylabel="Convective Heat Rate (W/m²)", title="Convective Heat Rate Profile", legend=false)
-# heat_load_plot = plot(sol.t, getindex.(sol.u, 7), xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", legend=false)
-# display(plot(heat_rate_plot, heat_load_plot, layout=(2,1)))
+# Get saved data
+saved_data = saved_values.saveval
+densities = zeros(length(saved_data))
+betas = zeros(length(saved_data))
+alphas = zeros(length(saved_data))
+heat_rates = zeros(length(saved_data))
+for i in 1:length(saved_data)
+    densities[i] = saved_data[i][1]
+    betas[i] = saved_data[i][2]
+    alphas[i] = saved_data[i][3]
+    heat_rates[i] = saved_data[i][4]
+end
+# println(size(betas))
+# println(saved_values.t)
+# println(sol.t)
+display(plot(saved_values.t[2:end], densities[2:end], xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", legend=false, yscale=:log10))
+display(plot(saved_values.t, betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", legend=false))
+heat_rate_plot = plot(saved_values.t, heat_rates, xlabel="Time (s)", ylabel="Convective Heat Rate (W/m²)", title="Convective Heat Rate Profile", legend=false)
+heat_load_plot = plot(sol.t, getindex.(sol.u, 7), xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", legend=false)
+display(plot(heat_rate_plot, heat_load_plot, layout=(2,1)))
 
 
 # Monte Carlo to test atmospheric disturbances
@@ -106,46 +106,50 @@ velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 times = Vector{Vector{Float64}}(undef, num_simulations)
 gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
 edl_params.atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, true)
-@showprogress for sim in 1:num_simulations
-    prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
-    sol_mc = solve(prob_mc, Tsit5(), dt=0.5, adaptive=false)
-    altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
-    velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
-    times[sim] = sol_mc.t
-    final_latitudes[sim] = getindex(sol_mc.u[end], 3) * (180 / π)
-    final_longitudes[sim] = getindex(sol_mc.u[end], 2) * (180 / π)
+@showprogress for sim in 24:num_simulations
+    try
+        prob_mc = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
+        sol_mc = solve(prob_mc, Tsit5(), dt=0.5, adaptive=false)
+        altitude_profiles[sim] = getindex.(sol_mc.u, 1) ./ 1e3
+        velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
+        times[sim] = sol_mc.t
+        final_latitudes[sim] = getindex(sol_mc.u[end], 3) * (180 / π)
+        final_longitudes[sim] = getindex(sol_mc.u[end], 2) * (180 / π)
 
-    saved_data = saved_values.saveval
-    densities = zeros(length(saved_data))
-    betas = zeros(length(saved_data))
-    alphas = zeros(length(saved_data))
-    heat_rates = zeros(length(saved_data))
-    for i in 1:length(saved_data)
-        densities[i] = saved_data[i][1]
-        betas[i] = saved_data[i][2]
-        alphas[i] = saved_data[i][3]
-        heat_rates[i] = saved_data[i][4]
+        saved_data = saved_values.saveval
+        densities = zeros(length(saved_data))
+        betas = zeros(length(saved_data))
+        alphas = zeros(length(saved_data))
+        heat_rates = zeros(length(saved_data))
+        for i in 1:length(saved_data)
+            densities[i] = saved_data[i][1]
+            betas[i] = saved_data[i][2]
+            alphas[i] = saved_data[i][3]
+            heat_rates[i] = saved_data[i][4]
+        end
+
+        df = DataFrame(
+            Time_s = times[sim],
+            Altitude_100km = altitude_profiles[sim],
+            Longitude_fin_deg = getindex.(sol_mc.u, 2) .* (180 / π),
+            Latitude_fin_deg = getindex.(sol_mc.u, 3) .* (180 / π),
+            Velocity_1000mps = velocity_profiles[sim],
+            FlightPath_deg = getindex.(sol_mc.u, 5) .* (180 / π),
+            Azimuth_deg = getindex.(sol_mc.u, 6) .* (180 / π),
+            HeatLoad_Jm2 = getindex.(sol_mc.u, 7)
+        )
+        CSV.write("optimal_trajectory_mpc_$(sim).csv", df)
+
+        df = DataFrame(
+            Time_s = saved_values.t,
+            AngleOfAttack_deg = alphas .* (180 / π),
+            BankAngle_deg = betas .* (180 / π),
+            HeatRate_Wm2 = heat_rates,
+        )
+        CSV.write("optimal_trajectory_mpc_$(sim)_control.csv", df)
+    catch e
+        continue
     end
-
-    df = DataFrame(
-        Time_s = times[sim],
-        Altitude_100km = altitude_profiles[sim],
-        Longitude_fin_deg = getindex.(sol_mc.u, 2) .* (180 / π),
-        Latitude_fin_deg = getindex.(sol_mc.u, 3) .* (180 / π),
-        Velocity_1000mps = velocity_profiles[sim],
-        FlightPath_deg = getindex.(sol_mc.u, 5) .* (180 / π),
-        Azimuth_deg = getindex.(sol_mc.u, 6) .* (180 / π),
-        HeatLoad_Jm2 = getindex.(sol_mc.u, 7)
-    )
-    CSV.write("optimal_trajectory_ssimpc_$(sim).csv", df)
-
-    df = DataFrame(
-        Time_s = saved_values.t,
-        AngleOfAttack_deg = alphas .* (180 / π),
-        BankAngle_deg = betas .* (180 / π),
-        HeatRate_Wm2 = heat_rates,
-    )
-    CSV.write("optimal_trajectory_ssimpc_$(sim)_control.csv", df)
 end
 
 # Plot MC results
