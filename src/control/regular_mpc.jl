@@ -22,13 +22,19 @@ function mpc(integrator)
     γ_s = γ
     ψ_s = ψ
     q_s = q
-    cD = integrator.p.Cd
-    cL = integrator.p.Cl
+    # cD = integrator.p.Cd
+    # cL = integrator.p.Cl
     # Get parameters
     m = integrator.p.mass
     Rₑ = integrator.p.R
     μ = integrator.p.μ
     S = integrator.p.area
+
+    a₀ = -0.20704
+    a₁ = 0.029244
+    b₀ = 0.07854
+    b₁ = -0.61592e-2
+    b₂ = 0.621408e-3
     
     # Scale physical constants to match H_SCALE
     R_E_SCALED = Rₑ / H_SCALE
@@ -89,7 +95,7 @@ function mpc(integrator)
     fix(ϕ[1], ϕ_s; force = true)
     fix(θ[1], θ_s; force = true)
     fix(scaled_v[1], v_s; force = true)
-    fix(γ[1], γ_s; force = true)
+    fix(γ[1], γ_s; force = true) 
     fix(ψ[1], ψ_s; force = true)
     # fix(q_dot[1], 0.0; force = true)
     fix(q[1], q_s; force = true)
@@ -113,9 +119,11 @@ function mpc(integrator)
     @expression(model, v[j=1:n], scaled_v[j] * V_SCALE)
 
     # Helper functions
+    @expression(model, cL[j=1:n], a₀ + a₁ * rad2deg(α[j]))
+    @expression(model, cD[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
     @expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # Convert altitude to km
-    @expression(model, D[j=1:n], 0.5 * cD * S * ρ[j] * v[j]^2)
-    @expression(model, L[j=1:n], 0.5 * cL * S * ρ[j] * v[j]^2)
+    @expression(model, D[j=1:n], 0.5 * cD[j] * S * ρ[j] * v[j]^2)
+    @expression(model, L[j=1:n], 0.5 * cL[j] * S * ρ[j] * v[j]^2)
     @expression(model, r[j=1:n], Rₑ + h[j])
     @expression(model, g[j=1:n], μ / r[j]^2)
     @expression(model, q_dot[j=1:n], C1 * ρ[j]^n_exp * v[j]^m_exp)
@@ -284,7 +292,7 @@ function mpc(integrator)
     @expression(model, vel_cost, (nominal_vels .- v[1:n]) / V_SCALE)
     @expression(model, γ_cost, nominal_γs .- γ[1:n])
     @expression(model, azimuth_cost, nominal_azimuths .- ψ[1:n])
-    @objective(model, Min, sum(10.0 * alt_cost.^2 + 10.0 * lon_cost.^2 + 10.0 * lat_cost.^2 + vel_cost.^2 + γ_cost.^2 + azimuth_cost.^2) + sum(0.1 * β[2:n].^2))
+    @objective(model, Min, sum(1.0 * alt_cost.^2 + 1.0 * lon_cost.^2 + 10000.0 * lat_cost.^2 + vel_cost.^2 + γ_cost.^2 + azimuth_cost.^2) + sum(0.001*β[2:n].^2 + 0.1*α[2:n].^2))
     # target_latitude = deg2rad(-4.5)  # Target latitude in radians
     # @constraint(model,target_latitude - deg2rad(0.1) <= θ[n] <= target_latitude + deg2rad(0.1))
     # @expression(model, latitude_error, θ[n] - target_latitude)
@@ -304,6 +312,7 @@ function mpc(integrator)
 
     # --- 9. Extract and Return Unscaled Control ---
     β_opt = value.(β)[2]
+    α_opt = value.(α)[2]
 
     # Save to integrator parameters for logging
     integrator.p.optimization_states = OptimizationStates(
@@ -316,5 +325,5 @@ function mpc(integrator)
         β_c = value.(β),
         # Δt_c = value.(Δt) * T_SCALE
     )
-    return β_opt
+    return β_opt, α_opt
 end

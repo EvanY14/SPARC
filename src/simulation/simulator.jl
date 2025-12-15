@@ -5,8 +5,18 @@ using StaticArrays
 function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64)
     h, ϕ, θ, v, γ, ψ, q = u
     m = p.mass
-    Cd = p.Cd
-    Cl = p.Cl
+    # Cd = p.Cd
+    # Cl = p.Cl
+
+    a₀ = -0.20704
+    a₁ = 0.029244
+    b₀ = 0.07854
+    b₁ = -0.61592e-2
+    b₂ = 0.621408e-3
+
+    Cd = b₀ + b₁ * rad2deg(p.α) + b₂ * rad2deg(p.α)^2
+    Cl = a₀ + a₁ * rad2deg(p.α)
+
     A = p.area
     μ = p.μ
     R = p.R # Planetary radius

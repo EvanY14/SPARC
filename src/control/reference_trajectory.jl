@@ -14,8 +14,15 @@ const hᵣ = 11.1e3 # Scale height (m)
 const Rₑ = 3396.2e3 # Radius of Mars (m)
 const μ = 4.2828372e13 # Gravitational parameter (m^3/sec^2)
 const S = 15.904 # Reference area (m^2)
-const cD = 1.46 # Drag coefficient
-const cL = 0.24 * cD # Lift coefficient
+# const cD = 1.46 # Drag coefficient
+# const cL = 0.24 * cD # Lift coefficient
+
+a₀ = -0.20704
+a₁ = 0.029244
+b₀ = 0.07854
+b₁ = -0.61592e-2
+b₂ = 0.621408e-3
+
 const C1 = 8.53e-13 # Constant for convective heat rate calculation
 const n_exp = 0.82958 # Exponent for convective heat rate calculation
 const m_exp = 4.512 # Exponent for convective heat rate calculation
@@ -112,11 +119,11 @@ set_start_value.(all_variables(model), vec(initial_guess))
 @expression(model, v[j=1:n], scaled_v[j] * V_SCALE)
 
 # Helper functions
-# @expression(model, c_L[j=1:n], a₀ + a₁ * rad2deg(α[j]))
-# @expression(model, c_D[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
+@expression(model, cL[j=1:n], a₀ + a₁ * rad2deg(α[j]))
+@expression(model, cD[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
 @expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # Convert altitude to km
-@expression(model, D[j=1:n], 0.5 * cD * S * ρ[j] * v[j]^2)
-@expression(model, L[j=1:n], 0.5 * cL * S * ρ[j] * v[j]^2)
+@expression(model, D[j=1:n], 0.5 * cD[j] * S * ρ[j] * v[j]^2)
+@expression(model, L[j=1:n], 0.5 * cL[j] * S * ρ[j] * v[j]^2)
 @expression(model, r[j=1:n], Rₑ + h[j])
 @expression(model, g[j=1:n], μ / r[j]^2)
 @expression(model, q_dot[j=1:n], C1 * ρ[j]^n_exp * v[j]^m_exp)

@@ -20,7 +20,7 @@ end
 
 atmospheric_density_callback = DiscreteCallback((u, t, integrator) -> true, atmospheric_density_effect!)
 
-SavedValueType = Tuple{Float64, Float64, Float64}  # (density, bank angle, heat rate)
+SavedValueType = Tuple{Float64, Float64, Float64, Float64}  # (density, bank angle, heat rate)
 saved_values = SavedValues(Float64, SavedValueType)
 
 # 3. DEFINE THE "SAVE" FUNCTION
@@ -28,8 +28,9 @@ saved_values = SavedValues(Float64, SavedValueType)
 function save_func(u, t, integrator)
     density = integrator.p.atmospheric_density
     β = integrator.p.β
+    α = integrator.p.α
     heat_rate = integrator.p.cache.q_dot
-    return (density, β, heat_rate)
+    return (density, β, α, heat_rate)
 end
 
 # 4. BUILD THE CALLBACK
@@ -37,7 +38,7 @@ end
 saving_callback = SavingCallback(save_func, saved_values, saveat=0.1)
 
 function control_callback_effect!(integrator)
-    integrator.p.β = integrator.p.control_function(integrator)
+    integrator.p.β, integrator.p.α  = integrator.p.control_function(integrator)
 end
 
 control_callback = PeriodicCallback(control_callback_effect!, 1.0) # Update every 1 second
