@@ -20,6 +20,7 @@ module ModelTypes
         atmospheric_density::Float64 = 0.0
         β::Float64 = 0.0
         q_dot::Float64 = 0.0
+        last_control_update::Float64 = -Inf
     end
 
     @kwdef struct TargetStates
@@ -50,6 +51,7 @@ module ModelTypes
         n_exp::Float64 = 0.0
         m_exp::Float64 = 0.0
         prev_x::MVector{n_states_plus_control, Float64} = MVector{n_states_plus_control, Float64}(zeros(n_states_plus_control))
+        prev_ΔU::Ref{Vector{Float64}} = Ref(Float64[])
         # prev_u::Float64 = 0.0
         input_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
         target_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
@@ -92,9 +94,10 @@ module ModelTypes
     struct GramAtmosphere
         gram::Any
         gram_atmosphere::Any
+        use_wind::Bool
     end
 
-    function GramAtmosphere(gram_directory::String, gram_data_directory::String, monte_carlo::Bool, planet_name::String, date::DateTime)
+    function GramAtmosphere(gram_directory::String, gram_data_directory::String, monte_carlo::Bool, planet_name::String, date::DateTime, use_wind::Bool=true)
         sys = pyimport("sys")
         os = pyimport("os")
         if !(gram_directory in pyconvert(Vector{String}, sys.path))
@@ -162,6 +165,6 @@ module ModelTypes
         ttime.setStartTime(date.year, date.month, date.day, date.hours, date.minutes, date.secs, gram.UTC, gram.PET)
         gram_atmosphere.setStartTime(ttime)
 
-        return GramAtmosphere(gram, gram_atmosphere)
+        return GramAtmosphere(gram, gram_atmosphere, use_wind)
     end
 end # module ModelTypes

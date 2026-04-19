@@ -43,8 +43,12 @@ function atmospheric_density(LatLonAlt::Tuple, t::Float64, atmosphere_model::Gra
     atmos = atmosphere.getAtmosphereState()
     rho = pyconvert(Float64, disturbance ? atmos.perturbedDensity : atmos.density)
     # T = pyconvert(Float64, atmos.temperature)
-    wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
+    if atmosphere_model.use_wind
+        wind = SVector{3, Float64}([pyconvert(Float64, disturbance ? atmos.perturbedEWWind : atmos.ewWind),
             pyconvert(Float64, disturbance ? atmos.perturbedNSWind : atmos.nsWind),
             pyconvert(Float64, atmos.verticalWind)])
+    else
+        wind = SVector{3, Float64}(0.0, 0.0, 0.0)
+    end
     return rho, wind
 end

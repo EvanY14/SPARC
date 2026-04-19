@@ -39,6 +39,16 @@ saving_callback = SavingCallback(save_func, saved_values, saveat=0.1)
 
 function control_callback_effect!(integrator)
     integrator.p.β, integrator.p.α  = integrator.p.control_function(integrator)
+    integrator.p.cache.last_control_update = integrator.t
 end
 
-control_callback = PeriodicCallback(control_callback_effect!, 1.0) # Update every 1 second
+function control_callback_condition(u, t, integrator)
+    dt = integrator.p.mpc_params.time_step
+    if dt <= 0.0
+        return true
+    end
+    last_update = integrator.p.cache.last_control_update
+    return !isfinite(last_update) || t - last_update >= dt - 10 * eps(max(abs(t), abs(last_update), 1.0))
+end
+
+control_callback = DiscreteCallback(control_callback_condition, control_callback_effect!)

@@ -3,10 +3,9 @@ import Interpolations
 import Ipopt
 using CSV
 using DataFrames
+using Plots
 # Global variables
-const w = 203000.0  # weight (lb)
-const g₀ = 32.174    # acceleration (ft/sec^2)
-const m = 3257.0    # mass (slug)
+const m = 3257.0    # mass (kg)
 
 # Aerodynamic and atmospheric forces on the vehicle
 const ρ₀ = 7e-3 # Density at surface on Mars (kg/m^3)
@@ -23,7 +22,7 @@ b₀ = 0.07854
 b₁ = -0.61592e-2
 b₂ = 0.621408e-3
 
-const C1 = 8.53e-13 # Constant for convective heat rate calculation
+const C1 = 8.53e-13 # Convective heat-rate coefficient for ρ in kg/m^3 and v in m/s
 const n_exp = 0.82958 # Exponent for convective heat rate calculation
 const m_exp = 4.512 # Exponent for convective heat rate calculation
 
@@ -41,8 +40,8 @@ const β_s = deg2rad(0)   # bank angle (rad)
 const t_s = 0.33         # time step (sec)
 
 # Final conditions, the so-called Terminal Area Energy Management (TAEM)
-const h_t = 11848.0 / H_SCALE          # altitude (ft) / 1e5
-const v_t = 700.0 / V_SCALE         # velocity (ft/sec) / 1e4
+const h_t = 11848.0 / H_SCALE          # altitude (m) / 1e5
+const v_t = 700.0 / V_SCALE         # velocity (m/sec) / 1e4
 const γ_t = deg2rad(-5.0)  # flight path angle (rad)
 
 # Number of mesh points (knots) to be used
@@ -55,7 +54,7 @@ polyfit_exponent = (h) -> polyfit_coefficients[1] * h^15 + polyfit_coefficients[
     polyfit_coefficients[4] * h^12 + polyfit_coefficients[5] * h^11 + polyfit_coefficients[6] * h^10 +
     polyfit_coefficients[7] * h^9 + polyfit_coefficients[8] * h^8 + polyfit_coefficients[9] * h^7 +
     polyfit_coefficients[10] * h^6 + polyfit_coefficients[11] * h^5 + polyfit_coefficients[12] * h^4 +
-    polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16]
+    polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16] # h in km, returns log density in kg/m^3
 display(plot(
     exp.(polyfit_exponent.(1.0:1.0:100.0)),
     1.0:1.0:100.0,
@@ -76,17 +75,19 @@ user_options = (
 model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
 
 @variables(model, begin
-    0 ≤ scaled_h[1:n]                # altitude (ft) / 1e5
+    0 ≤ scaled_h[1:n]                # altitude (m) / 1e5
     ϕ[1:n]                # longitude (rad)
     deg2rad(-89) ≤ θ[1:n] ≤ deg2rad(89)  # latitude (rad)
-    1e-4 ≤ scaled_v[1:n]                # velocity (ft/sec) / 1e4
+    1e-4 ≤ scaled_v[1:n]                # velocity (m/sec) / 1e4
     deg2rad(-89) ≤ γ[1:n] ≤ deg2rad(89)  # flight path angle (rad)
     ψ[1:n]                # azimuth (rad)
     deg2rad(-90) ≤ α[1:n] ≤ deg2rad(90)  # angle of attack (rad)
     deg2rad(-89) ≤ β[1:n] ≤ deg2rad(89)  # bank angle (rad)
     0.1 ≤       Δt[1:n] ≤ 1.0          # time step (sec)
+    0.0 <= lat_slack <= deg2rad(3.0)  # terminal latitude slack (rad)
+    0.0 <= lon_slack <= deg2rad(3.0)  # terminal longitude slack (rad)
     # 0.0 <= q_dot[1:n] <= 269.0               # heat rate (W/m^2)
-    0.0 <= q[1:n] <= 6200.0                  # heat load (J/m^2)
+    # 0.0 <= q[1:n] <= 6200.0                  # heat load (J/m^2)
     # Δt[1:n] == 4.0         # time step (sec)
 end);
 
@@ -98,7 +99,7 @@ fix(scaled_v[1], v_s; force = true)
 fix(γ[1], γ_s; force = true)
 fix(ψ[1], ψ_s; force = true)
 # fix(q_dot[1], 0.0; force = true)
-fix(q[1], 0.0; force = true)
+# fix(q[1], 0.0; force = true)
 
 # Fix final conditions
 fix(scaled_h[n], h_t; force = true)
@@ -108,11 +109,21 @@ fix(scaled_h[n], h_t; force = true)
 # fix(ϕ[n], deg2rad(137.4); force = true)  # Target longitude in radians
 
 # Initial guess: linear interpolation between boundary conditions
-x_s = [h_s, ϕ_s, θ_s, v_s, γ_s, ψ_s, α_s, β_s, t_s, 0.0]
-x_t = [h_t, ϕ_s, θ_s, v_t, γ_t, ψ_s, α_s, β_s, t_s, 6200.0]
+x_s = [h_s, ϕ_s, θ_s, v_s, γ_s, ψ_s, α_s, β_s, t_s]  # Initial state and control at the first knot
+x_t = [h_t, ϕ_s, θ_s, v_t, γ_t, ψ_s, α_s, β_s, t_s]
 interp_linear = Interpolations.LinearInterpolation([1, n], [x_s, x_t])
 initial_guess = mapreduce(transpose, vcat, interp_linear.(1:n))
-set_start_value.(all_variables(model), vec(initial_guess))
+set_start_value.(scaled_h, initial_guess[:, 1])
+set_start_value.(ϕ, initial_guess[:, 2])
+set_start_value.(θ, initial_guess[:, 3])
+set_start_value.(scaled_v, initial_guess[:, 4])
+set_start_value.(γ, initial_guess[:, 5])
+set_start_value.(ψ, initial_guess[:, 6])
+set_start_value.(α, initial_guess[:, 7])
+set_start_value.(β, initial_guess[:, 8])
+set_start_value.(Δt, initial_guess[:, 9])
+set_start_value(lat_slack, 0.0)
+set_start_value(lon_slack, 0.0)
 
 # Functions to restore `h` and `v` to their true scale
 @expression(model, h[j=1:n], scaled_h[j] * H_SCALE)
@@ -121,7 +132,7 @@ set_start_value.(all_variables(model), vec(initial_guess))
 # Helper functions
 @expression(model, cL[j=1:n], a₀ + a₁ * rad2deg(α[j]))
 @expression(model, cD[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
-@expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # Convert altitude to km
+@expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # h in km, ρ in kg/m^3
 @expression(model, D[j=1:n], 0.5 * cD[j] * S * ρ[j] * v[j]^2)
 @expression(model, L[j=1:n], 0.5 * cL[j] * S * ρ[j] * v[j]^2)
 @expression(model, r[j=1:n], Rₑ + h[j])
@@ -248,7 +259,7 @@ if integration_rule == "rk4"
         δψ[j] + Δt[j] * k3_dψ[j]
     )
 end
-@constraint(model, q_dot .<= 269.0)  # Heat rate constraint
+# @constraint(model, q_dot .<= 269.0)  # Heat rate constraint
 # Dynamics constraints
 for j in 2:n
     i = j - 1  # index of previous knot
@@ -281,22 +292,28 @@ for j in 2:n
     else
         @error "Unexpected integration rule '$(integration_rule)'"
     end
-    @constraint(model, q[j] == q[i] + q_dot[i]*Δt[i])
+    # @constraint(model, q[j] == q[i] + q_dot[i]*Δt[i])
 end
 
 # Heating constraints
 # Objective: Reach target latitude and longitude
-target_latitude = deg2rad(-4.5)  # Target latitude in radians
-@constraint(model,target_latitude - deg2rad(0.1) <= θ[n] <= target_latitude + deg2rad(0.1))
+target_latitude = deg2rad(-4.2)  # Target latitude in radians
+target_longitude = deg2rad(133.4)  # Target longitude in radians
 @expression(model, latitude_error, θ[n] - target_latitude)
-target_longitude = deg2rad(137.4)  # Target longitude in radians
-@constraint(model,target_longitude - deg2rad(0.1) <= ϕ[n] <= target_longitude + deg2rad(0.1))
-# @constraint(model, γ[n] >= deg2rad(-6.0))
 @expression(model, longitude_error, ϕ[n] - target_longitude)
+
+# Soft terminal constraints: slack bounds the absolute terminal miss in each axis.
+@constraint(model, latitude_error <= lat_slack)
+@constraint(model, -latitude_error <= lat_slack)
+@constraint(model, longitude_error <= lon_slack)
+@constraint(model, -longitude_error <= lon_slack)
+# @constraint(model, γ[n] >= deg2rad(-6.0))
 @expression(model, altitude_error, h[n] / H_SCALE - h_t)  # Target altitude in meters
 @expression(model, velocity_error, v[n] / V_SCALE - v_t) # Target velocity in m/s
 @expression(model, flight_path_angle_error, γ[n] - γ_t) # Target flight path angle in radians
-@objective(model, Min, sum(Δt))
+# @constraint(model, altitude_error^2 <= (1000.0)^2)  # Altitude error constraint
+# @constraint(model, velocity_error^2 <= (10.0)^2)  # Velocity error constraint
+@objective(model, Min, 1.0e4 * lat_slack^2 + 1.0e4 * lon_slack^2)  # Minimize total time and terminal miss slacks
 
 # set_silent(model)  # Hide solver's verbose output
 set_attribute(model, "tol", 1e-6)  # Set solver tolerance
@@ -360,7 +377,7 @@ display(plot(
 q_dots = exp.(polyfit_exponent.(value.(h) * 1e-3)).^n_exp .* (value.(v)).^m_exp .* C1
 display(plot(
     ts,
-    exp.(polyfit_exponent.(value.(h) * 1e-3)).^n_exp;
+    q_dots;
     legend = nothing,
     title = "Heating Rate (W/m^2)",
     linewidth = 2,
@@ -392,18 +409,18 @@ plt_heat_rate = plot(
     title = "Heating (W/m^2)",
 )
 
-plt_heat_load = plot(
-    ts,
-    value.(q);
-    legend = nothing,
-    title = "Heat Load (J/m^2)",
-)
+# plt_heat_load = plot(
+#     ts,
+#     value.(q);
+#     legend = nothing,
+#     title = "Heat Load (J/m^2)",
+# )
 display(plot(
     plt_attack_angle,
     plt_bank_angle,
-    plt_heat_rate,
-    plt_heat_load;
-    layout = grid(4, 1),
+    # plt_heat_rate,
+    # plt_heat_load;
+    layout = grid(2, 1),
     linewidth = 2,
     size = (700, 700),
 ))
@@ -414,10 +431,10 @@ display(plot(
     value.(scaled_h);
     linewidth = 2,
     legend = nothing,
-    title = "Space Shuttle Reentry Trajectory",
+    title = "Mars EDL Reference Trajectory",
     xlabel = "Longitude (deg)",
     ylabel = "Latitude (deg)",
-    zlabel = "Altitude (100,000 ft)",
+    zlabel = "Altitude (100 km)",
 ))
 
 # Save optimal trajectory data to a CSV file
@@ -427,12 +444,12 @@ df = DataFrame(
     Altitude_100km = value.(scaled_h),
     Longitude_deg = rad2deg.(value.(ϕ)),
     Latitude_deg = rad2deg.(value.(θ)),
-    Velocity_1000mps = value.(scaled_v),
+    Velocity_1000mps = value.(v) ./ 1e3,
     FlightPath_deg = rad2deg.(value.(γ)),
     Azimuth_deg = rad2deg.(value.(ψ)),
     AngleOfAttack_deg = rad2deg.(value.(α)),
     BankAngle_deg = rad2deg.(value.(β)),
-    HeatRate_Wm2 = value.(q_dots),
-    HeatLoad_Jm2 = value.(q),
+    # HeatRate_Wm2 = value.(q_dots),
+    # HeatLoad_Jm2 = value.(q),
 )
 CSV.write("optimal_trajectory.csv", df)
