@@ -1,6 +1,7 @@
 using LinearAlgebra
 using JuMP
 using Ipopt
+using OSQP
 using CSV
 using DataFrames
 using Interpolations
@@ -22,6 +23,7 @@ const _TRACKING_STATE_WIDE_MAX = [1.0e7, 100.0 * π, 100.0 * π, 1.0e5, 100.0 * 
 # controls loaded from the optimal trajectory. Keep them loose enough for the QP
 # to recover from reference/model mismatch while still discouraging chatter.
 const _TRACKING_INPUT_RATE_LIMIT_RAD_PER_SEC = deg2rad.([30.0, 20.0])
+const _TRACKING_MAX_HORIZON = 60
 const _TRACKING_POLYFIT_COEFFICIENTS = [
 	-8.278592174668491e-43,
 	1.2598495030132498e-38,
@@ -269,13 +271,25 @@ function _build_prediction_matrices(
 	Γ = zeros(N * nχ, N * nu)
 	η = zeros(N * nχ)
 
+	Φ_prev = Matrix{Float64}(I, nχ, nχ)
+	η_prev = zeros(nχ)
 	for i in 1:N
-		Φ[(i - 1) * nχ + 1:i * nχ, :] = _transition_product(Achi_seq, 1, i)
-		for j in 1:i
-			block = _transition_product(Achi_seq, j + 1, i) * Bchi_seq[j]
-			Γ[(i - 1) * nχ + 1:i * nχ, (j - 1) * nu + 1:j * nu] = block
-			η[(i - 1) * nχ + 1:i * nχ] .+= _transition_product(Achi_seq, j + 1, i) * cchi_seq[j]
+		row = (i - 1) * nχ + 1:i * nχ
+		A = Achi_seq[i]
+		Φ_i = A * Φ_prev
+		η_i = A * η_prev + cchi_seq[i]
+
+		Φ[row, :] .= Φ_i
+		η[row] .= η_i
+		if i > 1
+			prev_row = (i - 2) * nχ + 1:(i - 1) * nχ
+			prev_cols = 1:(i - 1) * nu
+			Γ[row, prev_cols] .= A * Γ[prev_row, prev_cols]
 		end
+		Γ[row, (i - 1) * nu + 1:i * nu] .= Bchi_seq[i]
+
+		Φ_prev = Φ_i
+		η_prev = η_i
 	end
 	return Φ, Γ, η
 end
@@ -284,7 +298,6 @@ function _build_extraction_matrices(
 	Φ::Matrix{Float64},
 	Γ::Matrix{Float64},
 	η::Vector{Float64},
-	C_seq::Vector{Matrix{Float64}},
 	G_seq::Vector{Matrix{Float64}},
 	nx::Int,
 	nu::Int,
@@ -308,11 +321,6 @@ function _build_extraction_matrices(
 	Γs = Gbar * Γe
 	ηs = Gbar * ηe
 
-	Cbar = _blockdiag_dense(C_seq)
-	Φy = Cbar * Φe
-	Γy = Cbar * Γe
-	ηy = Cbar * ηe
-
 	EN = zeros(nχ, N * nχ)
 	EN[:, (N - 1) * nχ + 1:N * nχ] .= Matrix{Float64}(I, nχ, nχ)
 	ΦN = Me * EN * Φ
@@ -329,9 +337,6 @@ function _build_extraction_matrices(
 		Φs = Φs,
 		Γs = Γs,
 		ηs = ηs,
-		Φy = Φy,
-		Γy = Γy,
-		ηy = ηy,
 		ΦN = ΦN,
 		ΓN = ΓN,
 		ηN = ηN,
@@ -377,20 +382,16 @@ function _build_constraints(
 	mats;
 	U_ref::Matrix{Float64},
 	X_ref::Matrix{Float64},
-	Y_ref::Matrix{Float64},
 	ΔVmin::Matrix{Float64},
 	ΔVmax::Matrix{Float64},
 	Umin::Matrix{Float64},
 	Umax::Matrix{Float64},
 	Xmin::Matrix{Float64},
 	Xmax::Matrix{Float64},
-	Ymin::Matrix{Float64},
-	Ymax::Matrix{Float64},
 )
 	Φe, Γe = mats.Φe, mats.Γe
 	Φv, Γv = mats.Φv, mats.Γv
-	Φy, Γy = mats.Φy, mats.Γy
-	ηe, ηv, ηy = mats.ηe, mats.ηv, mats.ηy
+	ηe, ηv = mats.ηe, mats.ηv
 
 	nv = size(Γv, 2)
 	A_list = Matrix{Float64}[]
@@ -411,11 +412,6 @@ function _build_constraints(
 	push!(b_list, _stackcols(Xmax) - _stackcols(X_ref) - Φe * χk - ηe)
 	push!(A_list, -Γe)
 	push!(b_list, -_stackcols(Xmin) + _stackcols(X_ref) + Φe * χk + ηe)
-
-	push!(A_list, Γy)
-	push!(b_list, _stackcols(Ymax) - _stackcols(Y_ref) - Φy * χk - ηy)
-	push!(A_list, -Γy)
-	push!(b_list, -_stackcols(Ymin) + _stackcols(Y_ref) + Φy * χk + ηy)
 
 	return vcat(A_list...), vcat(b_list...)
 end
@@ -467,8 +463,96 @@ function _solve_tracking_qp(
 	return ΔU_star, v0_star, u0_star
 end
 
+function _solve_tracking_sparse_qp(
+	ek::Vector{Float64},
+	v_prev::Vector{Float64};
+	U_ref::Matrix{Float64},
+	X_ref::Matrix{Float64},
+	A_seq::Vector{Matrix{Float64}},
+	B_seq::Vector{Matrix{Float64}},
+	d_seq::Vector{Vector{Float64}},
+	G::Diagonal,
+	Qs::Diagonal,
+	Rv::Diagonal,
+	RΔ::Diagonal,
+	P::Matrix{Float64},
+	ΔVmin::Matrix{Float64},
+	ΔVmax::Matrix{Float64},
+	Umin::Matrix{Float64},
+	Umax::Matrix{Float64},
+	Xmin::Matrix{Float64},
+	Xmax::Matrix{Float64},
+	warm_start::Vector{Float64} = Float64[],
+)
+	nx, N = size(X_ref)
+	nu = size(U_ref, 1)
+	model = Model(
+		optimizer_with_attributes(
+			OSQP.Optimizer,
+			"verbose" => false,
+			"eps_abs" => 1e-4,
+			"eps_rel" => 1e-4,
+			"max_iter" => 4000,
+			"polish" => true,
+		),
+	)
+	set_silent(model)
+
+	@variable(model, e[1:nx, 1:N])
+	@variable(model, v[1:nu, 1:N])
+	@variable(model, Δv[1:nu, 1:N])
+
+	if length(warm_start) == N * nu
+		for j in 1:N, i in 1:nu
+			set_start_value(Δv[i, j], warm_start[(j - 1) * nu + i])
+		end
+	end
+
+	for j in 1:N
+		for i in 1:nu
+			prev_v_i = j == 1 ? v_prev[i] : v[i, j - 1]
+			@constraint(model, v[i, j] == prev_v_i + Δv[i, j])
+			@constraint(model, ΔVmin[i, j] <= Δv[i, j] <= ΔVmax[i, j])
+			@constraint(model, Umin[i, j] <= U_ref[i, j] + v[i, j] <= Umax[i, j])
+		end
+
+		for i in 1:nx
+			prev_e = j == 1 ? ek : e[:, j - 1]
+			@constraint(
+				model,
+				e[i, j] ==
+				sum(A_seq[j][i, k] * prev_e[k] for k in 1:nx) +
+				sum(B_seq[j][i, k] * v[k, j] for k in 1:nu) +
+				d_seq[j][i],
+			)
+			@constraint(model, Xmin[i, j] <= X_ref[i, j] + e[i, j] <= Xmax[i, j])
+		end
+	end
+
+	@objective(
+		model,
+		Min,
+		sum(Qs[i, i] * (G[i, i] * e[i, j])^2 for i in 1:nx, j in 1:N) +
+		sum(Rv[i, i] * v[i, j]^2 for i in 1:nu, j in 1:N) +
+		sum(RΔ[i, i] * Δv[i, j]^2 for i in 1:nu, j in 1:N) +
+		sum(P[i, k] * e[i, N] * e[k, N] for i in 1:nx, k in 1:nx),
+	)
+
+	optimize!(model)
+	term = termination_status(model)
+	if !(term in (MOI.OPTIMAL, MOI.LOCALLY_SOLVED, MOI.ALMOST_OPTIMAL))
+		@warn "tracking MPC OSQP solve returned status $term"
+	end
+
+	ΔU_star = vec(value.(Δv))
+	V_star = value.(v)
+	E_star = value.(e)
+	u0_star = U_ref[:, 1] + V_star[:, 1]
+	return ΔU_star, V_star, E_star, u0_star
+end
+
 function trackingmpc(integrator)
-	N = integrator.p.mpc_params.n_horizon
+	N = max(min(integrator.p.mpc_params.n_horizon, _TRACKING_MAX_HORIZON), 1)
 	dt = integrator.p.mpc_params.time_step
 	t0 = integrator.t
 
@@ -498,8 +582,6 @@ function trackingmpc(integrator)
 	end
 
 	U_ref = reduce(hcat, (_reference_control_at(τ, current_control_fallback) for τ in model_times))
-	Y_ref = copy(X_ref)
-
 	ek = xk - x_ref_now
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
 	# Use the reference at the *previous* step as the baseline so that
@@ -514,8 +596,6 @@ function trackingmpc(integrator)
 	A_seq = Vector{Matrix{Float64}}(undef, N)
 	B_seq = Vector{Matrix{Float64}}(undef, N)
 	d_seq = Vector{Vector{Float64}}(undef, N)
-	C_seq = [Matrix{Float64}(I, nx, nx) for _ in 1:N]
-
 	state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
 	G = Diagonal(1.0 ./ state_scales)
 	G_seq = [Matrix{Float64}(G) for _ in 1:N]
@@ -541,7 +621,7 @@ function trackingmpc(integrator)
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([10000.0, 10000.0, 10000.0, 3000.0, 1000.0, 5000.0])
+	P_normalized = Diagonal([5000.0, 10000.0, 10000.0, 3000.0, 1000.0, 3000.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
 	αmin = deg2rad(-90.0)
@@ -567,29 +647,6 @@ function trackingmpc(integrator)
 	Xmax_vec = _TRACKING_STATE_WIDE_MAX
 	Xmin = hcat([Xmin_vec for _ in 1:N]...)
 	Xmax = hcat([Xmax_vec for _ in 1:N]...)
-	Ymin = copy(Xmin)
-	Ymax = copy(Xmax)
-
-	Achi_seq, Bchi_seq, cchi_seq = _build_augmented_matrices(A_seq, B_seq, d_seq)
-	Φ, Γ, η = _build_prediction_matrices(Achi_seq, Bchi_seq, cchi_seq)
-	mats = _build_extraction_matrices(Φ, Γ, η, C_seq, G_seq, nx, nu, N)
-
-	H, h = _build_cost(χk, mats, Qs_seq, Rv_seq, RΔ_seq, P)
-	Aqp, bqp = _build_constraints(
-		χk,
-		mats;
-		U_ref = U_ref,
-		X_ref = X_ref,
-		Y_ref = Y_ref,
-		ΔVmin = ΔVmin,
-		ΔVmax = ΔVmax,
-		Umin = Umin,
-		Umax = Umax,
-		Xmin = Xmin,
-		Xmax = Xmax,
-		Ymin = Ymin,
-		Ymax = Ymax,
-	)
 
 	# Shift the previous solution by one step: drop the first nu elements (already
 	# applied) and pad with zeros at the tail as a neutral guess for the new step.
@@ -600,14 +657,25 @@ function trackingmpc(integrator)
 		zeros(N * nu)
 	end
 
-	ΔU_star, _, u0_star = _solve_tracking_qp(
-		χk,
-		U_ref[:, 1];
-		H = H,
-		h = h,
-		Aqp = Aqp,
-		bqp = bqp,
-		nu = nu,
+	ΔU_star, V_star, E_star, u0_star = _solve_tracking_sparse_qp(
+		ek,
+		v_prev;
+		U_ref = U_ref,
+		X_ref = X_ref,
+		A_seq = A_seq,
+		B_seq = B_seq,
+		d_seq = d_seq,
+		G = G,
+		Qs = Qs,
+		Rv = Rv,
+		RΔ = RΔ,
+		P = P,
+		ΔVmin = ΔVmin,
+		ΔVmax = ΔVmax,
+		Umin = Umin,
+		Umax = Umax,
+		Xmin = Xmin,
+		Xmax = Xmax,
 		warm_start = warm_start,
 	)
 
@@ -617,12 +685,8 @@ function trackingmpc(integrator)
 	β_cmd = clamp(u0_star[2], βmin, βmax)
 	integrator.p.mpc_params.prev_x[nx + 1:nx + nu] .= [α_cmd, β_cmd]
 
-	χ_pred = mats.Φe * χk + mats.Γe * ΔU_star + mats.ηe
-	V_pred = mats.Φv * χk + mats.Γv * ΔU_star + mats.ηv
-	E_pred = reshape(χ_pred, nx, N)
-	U_err_pred = reshape(V_pred, nu, N)
-	X_act_pred = X_ref + E_pred
-	U_pred = U_ref + U_err_pred
+	X_act_pred = X_ref + E_star
+	U_pred = U_ref + V_star
 	β_pred = vec(U_pred[2, :])
 
 	integrator.p.optimization_states = OptimizationStates(

@@ -6,7 +6,8 @@ function _reference_time_bounds()
 	return cache.t_min, cache.t_max
 end
 
-function _shrinking_horizon_times(t0::Real, dt::Real)
+function _shrinking_horizon_times(t0::Real, dt::Real, max_horizon::Int)
+	max_horizon = max(max_horizon, 1)
 	bounds = _reference_time_bounds()
 	if bounds === nothing
 		N = 1
@@ -21,7 +22,7 @@ function _shrinking_horizon_times(t0::Real, dt::Real)
 		N = 1
 		prediction_times = [Float64(t0 + dt)]
 	else
-		N = max(ceil(Int, remaining_time / dt), 1)
+		N = min(max(ceil(Int, remaining_time / dt), 1), max_horizon)
 		prediction_times = min.(Float64(t0) .+ collect(1:N) .* Float64(dt), Float64(t_ref_final))
 	end
 
@@ -47,6 +48,7 @@ end
 function trackingmpc_shrinking_horizon(integrator)
 	dt = integrator.p.mpc_params.time_step
 	t0 = integrator.t
+	max_horizon = max(min(integrator.p.mpc_params.n_horizon, _TRACKING_MAX_HORIZON), 1)
 
 	xk = Vector{Float64}(integrator.u[1:6])
 	nu = 2
@@ -63,7 +65,7 @@ function trackingmpc_shrinking_horizon(integrator)
 		nominal[6](τ),
 	]
 
-	model_times, prediction_times, step_sizes = _shrinking_horizon_times(t0, dt)
+	model_times, prediction_times, step_sizes = _shrinking_horizon_times(t0, dt, max_horizon)
 	N = length(prediction_times)
 	x_ref_now = xref_at(t0)
 	X_ref = zeros(nx, N)
@@ -74,8 +76,6 @@ function trackingmpc_shrinking_horizon(integrator)
 	end
 
 	U_ref = reduce(hcat, (_reference_control_at(τ, current_control_fallback) for τ in model_times))
-	Y_ref = copy(X_ref)
-
 	ek = xk - x_ref_now
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
 	uref_prev = _reference_control_at(t0 - dt, current_control_fallback)
@@ -88,8 +88,6 @@ function trackingmpc_shrinking_horizon(integrator)
 	A_seq = Vector{Matrix{Float64}}(undef, N)
 	B_seq = Vector{Matrix{Float64}}(undef, N)
 	d_seq = Vector{Vector{Float64}}(undef, N)
-	C_seq = [Matrix{Float64}(I, nx, nx) for _ in 1:N]
-
 	state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
 	G = Diagonal(1.0 ./ state_scales)
 	G_seq = [Matrix{Float64}(G) for _ in 1:N]
@@ -100,13 +98,13 @@ function trackingmpc_shrinking_horizon(integrator)
 		d_seq[j] = _nominal_reentry_step_si(X_model[:, j], U_ref[:, j], Δt) - X_ref[:, j]
 	end
 
-	Qs = Diagonal([5000.0, 500.0, 5000.0, 5000.0, 500.0, 1000.0])
+	Qs = Diagonal([1000.0, 5000.0, 5000.0, 1000.0, 500.0, 1000.0])
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	Rv = Diagonal([1.0e-2, 0.1])
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([10000.0, 2000.0, 10000.0, 10000.0, 1000.0, 5000.0])
+	P_normalized = Diagonal([5000.0, 10000.0, 10000.0, 3000.0, 1000.0, 3000.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
 	αmin = deg2rad(-90.0)
@@ -129,39 +127,27 @@ function trackingmpc_shrinking_horizon(integrator)
 	Xmax_vec = _TRACKING_STATE_WIDE_MAX
 	Xmin = hcat([Xmin_vec for _ in 1:N]...)
 	Xmax = hcat([Xmax_vec for _ in 1:N]...)
-	Ymin = copy(Xmin)
-	Ymax = copy(Xmax)
 
-	Achi_seq, Bchi_seq, cchi_seq = _build_augmented_matrices(A_seq, B_seq, d_seq)
-	Φ, Γ, η = _build_prediction_matrices(Achi_seq, Bchi_seq, cchi_seq)
-	mats = _build_extraction_matrices(Φ, Γ, η, C_seq, G_seq, nx, nu, N)
-
-	H, h = _build_cost(χk, mats, Qs_seq, Rv_seq, RΔ_seq, P)
-	Aqp, bqp = _build_constraints(
-		χk,
-		mats;
+	warm_start = _shifted_warm_start(integrator.p.mpc_params.prev_ΔU[], N, nu)
+	ΔU_star, V_star, E_star, u0_star = _solve_tracking_sparse_qp(
+		ek,
+		v_prev;
 		U_ref = U_ref,
 		X_ref = X_ref,
-		Y_ref = Y_ref,
+		A_seq = A_seq,
+		B_seq = B_seq,
+		d_seq = d_seq,
+		G = G,
+		Qs = Qs,
+		Rv = Rv,
+		RΔ = RΔ,
+		P = P,
 		ΔVmin = ΔVmin,
 		ΔVmax = ΔVmax,
 		Umin = Umin,
 		Umax = Umax,
 		Xmin = Xmin,
 		Xmax = Xmax,
-		Ymin = Ymin,
-		Ymax = Ymax,
-	)
-
-	warm_start = _shifted_warm_start(integrator.p.mpc_params.prev_ΔU[], N, nu)
-	ΔU_star, _, u0_star = _solve_tracking_qp(
-		χk,
-		U_ref[:, 1];
-		H = H,
-		h = h,
-		Aqp = Aqp,
-		bqp = bqp,
-		nu = nu,
 		warm_start = warm_start,
 	)
 
@@ -171,12 +157,8 @@ function trackingmpc_shrinking_horizon(integrator)
 	β_cmd = clamp(u0_star[2], βmin, βmax)
 	integrator.p.mpc_params.prev_x[nx + 1:nx + nu] .= [α_cmd, β_cmd]
 
-	χ_pred = mats.Φe * χk + mats.Γe * ΔU_star + mats.ηe
-	V_pred = mats.Φv * χk + mats.Γv * ΔU_star + mats.ηv
-	E_pred = reshape(χ_pred, nx, N)
-	U_err_pred = reshape(V_pred, nu, N)
-	X_act_pred = X_ref + E_pred
-	U_pred = U_ref + U_err_pred
+	X_act_pred = X_ref + E_star
+	U_pred = U_ref + V_star
 	β_pred = vec(U_pred[2, :])
 
 	integrator.p.optimization_states = OptimizationStates(
