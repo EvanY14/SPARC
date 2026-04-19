@@ -75,7 +75,7 @@ function trackingmpc_shrinking_horizon(integrator)
 		X_ref[:, j] .= xref_at(prediction_times[j])
 	end
 
-	U_ref = reduce(hcat, (_reference_control_at(τ, current_control_fallback) for τ in model_times))
+	U_ref = _reference_control_matrix(model_times, current_control_fallback)
 	ek = xk - x_ref_now
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
 	uref_prev = _reference_control_at(t0 - dt, current_control_fallback)
@@ -98,13 +98,13 @@ function trackingmpc_shrinking_horizon(integrator)
 		d_seq[j] = _nominal_reentry_step_si(X_model[:, j], U_ref[:, j], Δt) - X_ref[:, j]
 	end
 
-	Qs = Diagonal([1000.0, 5000.0, 5000.0, 1000.0, 500.0, 1000.0])
+	Qs = Diagonal([100.0, 3000.0, 3000.0, 100.0, 500.0, 100.0])
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	Rv = Diagonal([1.0e-2, 0.1])
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([5000.0, 10000.0, 10000.0, 3000.0, 1000.0, 3000.0])
+	P_normalized = Diagonal([1000.0, 150000.0, 150000.0, 3000.0, 1000.0, 1000.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
 	αmin = deg2rad(-90.0)

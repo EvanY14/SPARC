@@ -23,8 +23,8 @@ tspan = (0.0, 500.0) # Time span for the simulation
 # Define EDL parameters
 mass = 3257.0 # kg
 area = 15.904 # m^2
-const μ = 4.2828372e13 # m^3/s^2 for Mars
-R = 3396200.0 # m for Mars
+const μ = 3.986004418e14 # m^3/s^2 for Earth
+R = 6378137.0 # m for Earth (WGS84 equatorial radius)
 
 function latlonalt_to_cartesian_km(latitude, longitude, altitude, planet_radius)
     radius_km = (planet_radius + altitude) / 1e3
@@ -82,15 +82,11 @@ target_γ = deg2rad(-5.0) # Target final flight path angle in radians
 target_states = TargetStates(altitude=target_altitude, longitude=deg2rad(137.4), latitude=deg2rad(-4.5), velocity=target_velocity, flight_path_angle=target_γ)
 
 # Define the atmospheric model
-# exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
-gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0), false)
-# const polyfit_coefficients = [-8.278592174668491e-43, 1.2598495030132498e-38, -8.634065871212132e-35, 3.5185552646901455e-31, -9.480197229347404e-28, 1.7753104600795092e-24, -2.3622107295909874e-21, 2.2393603867716714e-18, -1.487031340144351e-15, 6.592111911218399e-13, -1.714014789283248e-10, 1.3556252797088945e-08, 5.196239221937857e-06, -0.0012393556758398866, -0.0500835105059738, -4.213431227716942]
-# polyfit_atmosphere = PolyfitAtmosphere(SVector{16, Float64}(polyfit_coefficients)) # Coefficients for a polynomial fit to the log of atmospheric density vs altitude (in km), from 0 to 125 km
-
+gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "earth", DateTime(2012, 8, 6, 5, 10, 46.0), false)
 # Define integration parameters
 edl_cache = EDLCache()
 optimization_states = OptimizationStates()
-mpc_params = MPCParams{100, 7, 8, 0.1}(n_horizon=60, time_step=1.0, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
+mpc_params = MPCParams{100, 7, 8, 0.1}(n_horizon=100, time_step=0.75, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
 edl_params = EDLParams(mass = mass, area = area, μ = μ, R = R, control_function = trackingmpc_shrinking, β = β0_ref, α = α0_ref, atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), atmospheric_density = 0.0, wind = SVector{3, Float64}(zeros(3)), target_states = target_states, optimization_states = optimization_states, nominal_trajectory = optimal_trajectory, cache = edl_cache, mpc_params = mpc_params)
 # Define callbacks
 callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback, control_callback)
@@ -345,7 +341,7 @@ end
 # altitude_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 # velocity_profiles = Vector{Vector{Float64}}(undef, num_simulations)
 # times = Vector{Vector{Float64}}(undef, num_simulations)
-# gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "mars", DateTime(2012, 8, 6, 5, 10, 46.0))
+# gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "earth", DateTime(2012, 8, 6, 5, 10, 46.0))
 # edl_params.atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, true)
 # @showprogress for sim in 24:num_simulations
 #     try

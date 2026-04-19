@@ -121,9 +121,8 @@ module ModelTypes
 
         input_parameters = inputParameters[planet_name]
 
-        # Mars has some weird specific parameters, so this line is just to check to make sure the it doesn't do it for the other planets
+        # Mars has some specific parameters, so keep this branch planet-scoped.
         if planet_name == "mars"
-            # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
             input_parameters.dataPath = gram_data_directory * "/Mars/data/"
             if !Bool(os.path.exists(input_parameters.dataPath))
                 throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))
@@ -131,7 +130,6 @@ module ModelTypes
         end
 
         if planet_name == "earth"
-            # input_parameters.dataPath = os.path.join(os.path.dirname(os.path.abspath(@__FILE__)),"..", "GRAM_Data", "Mars", "data", "")
             input_parameters.dataPath = gram_data_directory * "/Earth/data/"
             if !Bool(os.path.exists(input_parameters.dataPath))
                 throw(ArgumentError("GRAM data path not found: " * input_parameters.dataPath))

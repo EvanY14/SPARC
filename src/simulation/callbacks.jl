@@ -38,7 +38,7 @@ end
 saving_callback = SavingCallback(save_func, saved_values, saveat=0.1)
 
 function control_callback_effect!(integrator)
-    integrator.p.β, integrator.p.α  = integrator.p.control_function(integrator)
+    integrator.p.β, integrator.p.α = Base.invokelatest(integrator.p.control_function, integrator)
     integrator.p.cache.last_control_update = integrator.t
 end
 

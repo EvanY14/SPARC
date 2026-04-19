@@ -4,14 +4,13 @@ import Ipopt
 using CSV
 using DataFrames
 using Plots
+include("../model/earth_atmosphere_polyfit.jl")
 # Global variables
 const m = 3257.0    # mass (kg)
 
 # Aerodynamic and atmospheric forces on the vehicle
-const ρ₀ = 7e-3 # Density at surface on Mars (kg/m^3)
-const hᵣ = 11.1e3 # Scale height (m)
-const Rₑ = 3396.2e3 # Radius of Mars (m)
-const μ = 4.2828372e13 # Gravitational parameter (m^3/sec^2)
+const Rₑ = 6378137.0 # Radius of Earth (m, WGS84 equatorial)
+const μ = 3.986004418e14 # Earth gravitational parameter (m^3/sec^2)
 const S = 15.904 # Reference area (m^2)
 # const cD = 1.46 # Drag coefficient
 # const cL = 0.24 * cD # Lift coefficient
@@ -49,16 +48,10 @@ const n = 503
 
 # Integration scheme to be used for the dynamics
 const integration_rule = "trapezoidal"  # "rectangular", "trapezoidal", or "rk4"
-const polyfit_coefficients = [-8.278592174668491e-43, 1.2598495030132498e-38, -8.634065871212132e-35, 3.5185552646901455e-31, -9.480197229347404e-28, 1.7753104600795092e-24, -2.3622107295909874e-21, 2.2393603867716714e-18, -1.487031340144351e-15, 6.592111911218399e-13, -1.714014789283248e-10, 1.3556252797088945e-08, 5.196239221937857e-06, -0.0012393556758398866, -0.0500835105059738, -4.213431227716942]
-polyfit_exponent = (h) -> polyfit_coefficients[1] * h^15 + polyfit_coefficients[2] * h^14 + polyfit_coefficients[3] * h^13 +
-    polyfit_coefficients[4] * h^12 + polyfit_coefficients[5] * h^11 + polyfit_coefficients[6] * h^10 +
-    polyfit_coefficients[7] * h^9 + polyfit_coefficients[8] * h^8 + polyfit_coefficients[9] * h^7 +
-    polyfit_coefficients[10] * h^6 + polyfit_coefficients[11] * h^5 + polyfit_coefficients[12] * h^4 +
-    polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16] # h in km, returns log density in kg/m^3
 display(plot(
-    exp.(polyfit_exponent.(1.0:1.0:100.0)),
+    earth_atmosphere_density.(1.0e3:1.0e3:100.0e3),
     1.0:1.0:100.0,
-    title = "Polyfit Exponent vs Altitude",
+    title = "Earth Density vs Altitude",
     ylabel = "Altitude (km)",
     xlabel = "Density",
     xscale = :log10,
@@ -73,6 +66,7 @@ user_options = (
 
 # Create JuMP model, using Ipopt as the solver
 model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
+@operator(model, earth_density_op, 1, earth_atmosphere_density)
 
 @variables(model, begin
     0 ≤ scaled_h[1:n]                # altitude (m) / 1e5
@@ -132,7 +126,7 @@ set_start_value(lon_slack, 0.0)
 # Helper functions
 @expression(model, cL[j=1:n], a₀ + a₁ * rad2deg(α[j]))
 @expression(model, cD[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
-@expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # h in km, ρ in kg/m^3
+@expression(model, ρ[j=1:n], earth_density_op(h[j]))
 @expression(model, D[j=1:n], 0.5 * cD[j] * S * ρ[j] * v[j]^2)
 @expression(model, L[j=1:n], 0.5 * cL[j] * S * ρ[j] * v[j]^2)
 @expression(model, r[j=1:n], Rₑ + h[j])
@@ -374,7 +368,7 @@ display(plot(
     size = (700, 700),
 ))
 
-q_dots = exp.(polyfit_exponent.(value.(h) * 1e-3)).^n_exp .* (value.(v)).^m_exp .* C1
+q_dots = earth_atmosphere_density.(value.(h)).^n_exp .* (value.(v)).^m_exp .* C1
 display(plot(
     ts,
     q_dots;
@@ -385,8 +379,7 @@ display(plot(
 ))
 # println(polyfit)
 # function q_dot_calc(h, v)
-#     ρ(h) = exp.(polyfit_exponent.(h*1e-3))
-#     q = C1 * ρ(h)^n * v^m_exp
+#     q = C1 * earth_atmosphere_density(h)^n * v^m_exp
 #     return q
 # end
 
@@ -431,7 +424,7 @@ display(plot(
     value.(scaled_h);
     linewidth = 2,
     legend = nothing,
-    title = "Mars EDL Reference Trajectory",
+    title = "Earth EDL Reference Trajectory",
     xlabel = "Longitude (deg)",
     ylabel = "Latitude (deg)",
     zlabel = "Altitude (100 km)",

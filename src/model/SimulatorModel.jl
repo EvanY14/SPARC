@@ -15,6 +15,7 @@ module SimulatorModel
     export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, openloopcontrol, openloop
     include("types.jl")
     @reexport using .ModelTypes
+    include("earth_atmosphere_polyfit.jl")
 
     # Simulator models
     include("../simulation/simulator.jl")

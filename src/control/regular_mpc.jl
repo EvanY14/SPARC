@@ -12,7 +12,6 @@ function mpc(integrator)
 
     # --- 2. Initial Setup and Scaled Inputs ---
     user_options = ()
-    model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
     integration_rule = "trapezoidal"
     h, ϕ, θ, v, γ, ψ, q = integrator.u # Current unscaled state
     h_s = h / H_SCALE
@@ -42,15 +41,6 @@ function mpc(integrator)
     
 
     # Atmosphere and Horizon
-    # polyfit_coeffs = SVector{21, Float64}(Float64[2.484093267854419e-35, -3.432059129183589e-32, 2.0998712380197567e-29, -7.374629031680772e-27, 1.5792723271745155e-24, -1.8603802534535614e-22, 1.1824450144926489e-21, 3.944724626716538e-18, -8.193458848294376e-16, 9.735891059182661e-14, -7.897816207129188e-12, 4.5807414555856416e-10, -1.9161056559474318e-08, 5.713547101023083e-07, -1.1780507222866087e-05, 0.00015839694888627217, -0.0012270664089332438, 0.0035825645308133545, 0.012231321466518718, -0.1691661107577747, -4.32384932627002])
-    # polyfit_atmosphere = PolyfitAtmosphere{length(polyfit_coeffs)}(polyfit_coeffs)
-    # exponential_atmosphere = ExponentialAtmosphere(0.02, 11.1) # surface density in kg/m^3, scale height in km
-    polyfit_coefficients = SVector{16, Float64}(-8.278592174668491e-43, 1.2598495030132498e-38, -8.634065871212132e-35, 3.5185552646901455e-31, -9.480197229347404e-28, 1.7753104600795092e-24, -2.3622107295909874e-21, 2.2393603867716714e-18, -1.487031340144351e-15, 6.592111911218399e-13, -1.714014789283248e-10, 1.3556252797088945e-08, 5.196239221937857e-06, -0.0012393556758398866, -0.0500835105059738, -4.213431227716942)
-    polyfit_exponent = (h) -> polyfit_coefficients[1] * h^15 + polyfit_coefficients[2] * h^14 + polyfit_coefficients[3] * h^13 +
-    polyfit_coefficients[4] * h^12 + polyfit_coefficients[5] * h^11 + polyfit_coefficients[6] * h^10 +
-    polyfit_coefficients[7] * h^9 + polyfit_coefficients[8] * h^8 + polyfit_coefficients[9] * h^7 +
-    polyfit_coefficients[10] * h^6 + polyfit_coefficients[11] * h^5 + polyfit_coefficients[12] * h^4 +
-    polyfit_coefficients[13] * h^3 + polyfit_coefficients[14] * h^2 + polyfit_coefficients[15] * h^1 + polyfit_coefficients[16]
     C1 = 8.53e-13 # Constant for convective heat rate calculation
     n_exp = 0.82958 # Exponent for convective heat rate calculation
     m_exp = 4.512 # Exponent for convective heat rate calculation
@@ -74,6 +64,7 @@ function mpc(integrator)
     β_s = integrator.p.β
     # --- 3. Define Scaled JuMP Variables ---
     model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
+    @operator(model, earth_density_op, 1, earth_atmosphere_density)
 
     @variables(model, begin
         0 ≤ scaled_h[1:n]                # altitude (ft) / 1e5
@@ -121,7 +112,7 @@ function mpc(integrator)
     # Helper functions
     @expression(model, cL[j=1:n], a₀ + a₁ * rad2deg(α[j]))
     @expression(model, cD[j=1:n], b₀ + b₁ * rad2deg(α[j]) + b₂ * rad2deg(α[j])^2)
-    @expression(model, ρ[j=1:n], exp(polyfit_exponent(h[j]*1e-3)))  # Convert altitude to km
+    @expression(model, ρ[j=1:n], earth_density_op(h[j]))
     @expression(model, D[j=1:n], 0.5 * cD[j] * S * ρ[j] * v[j]^2)
     @expression(model, L[j=1:n], 0.5 * cL[j] * S * ρ[j] * v[j]^2)
     @expression(model, r[j=1:n], Rₑ + h[j])

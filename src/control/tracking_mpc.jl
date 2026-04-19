@@ -23,25 +23,7 @@ const _TRACKING_STATE_WIDE_MAX = [1.0e7, 100.0 * π, 100.0 * π, 1.0e5, 100.0 * 
 # controls loaded from the optimal trajectory. Keep them loose enough for the QP
 # to recover from reference/model mismatch while still discouraging chatter.
 const _TRACKING_INPUT_RATE_LIMIT_RAD_PER_SEC = deg2rad.([30.0, 20.0])
-const _TRACKING_MAX_HORIZON = 60
-const _TRACKING_POLYFIT_COEFFICIENTS = [
-	-8.278592174668491e-43,
-	1.2598495030132498e-38,
-	-8.634065871212132e-35,
-	3.5185552646901455e-31,
-	-9.480197229347404e-28,
-	1.7753104600795092e-24,
-	-2.3622107295909874e-21,
-	2.2393603867716714e-18,
-	-1.487031340144351e-15,
-	6.592111911218399e-13,
-	-1.714014789283248e-10,
-	1.3556252797088945e-8,
-	5.196239221937857e-6,
-	-0.0012393556758398866,
-	-0.0500835105059738,
-	-4.213431227716942,
-]
+const _TRACKING_MAX_HORIZON = 100
 
 function _blockdiag_dense(mats::Vector{<:AbstractMatrix})
 	rows = sum(size(M, 1) for M in mats)
@@ -118,6 +100,17 @@ function _reference_control_at(τ::Real, fallback::AbstractVector{<:Real})
 	return [Float64(cache.α(τ)), Float64(cache.β(τ))]
 end
 
+function _reference_control_matrix(
+	times::AbstractVector{<:Real},
+	fallback::AbstractVector{<:Real},
+)
+	U_ref = zeros(2, length(times))
+	for (j, τ) in pairs(times)
+		U_ref[:, j] .= _reference_control_at(τ, fallback)
+	end
+	return U_ref
+end
+
 function _transition_product(Achi_seq::Vector{Matrix{Float64}}, start_idx::Int, end_idx::Int)
 	nχ = size(Achi_seq[1], 1)
 	T = Matrix{Float64}(I, nχ, nχ)
@@ -161,13 +154,18 @@ function _zoh_discretize(Ac::Matrix{Float64}, Bc::Matrix{Float64}, dt::Real)
 	return M[1:n, 1:n], M[1:n, n + 1:n + m]
 end
 
-function _tracking_polyfit_density(h::Real)
-	h_km = Float64(h) * 1.0e-3
-	exponent = 0.0
-	for i in eachindex(_TRACKING_POLYFIT_COEFFICIENTS)
-		exponent += _TRACKING_POLYFIT_COEFFICIENTS[i] * h_km^(length(_TRACKING_POLYFIT_COEFFICIENTS) - i)
+function _finite_difference_jacobian(f::Function, z::Vector{Float64})
+	f0 = f(z)
+	J = zeros(length(f0), length(z))
+	for i in eachindex(z)
+		step = sqrt(eps(Float64)) * max(abs(z[i]), 1.0)
+		zp = copy(z)
+		zm = copy(z)
+		zp[i] += step
+		zm[i] -= step
+		J[:, i] .= (f(zp) .- f(zm)) ./ (2.0 * step)
 	end
-	return exp(exponent)
+	return J
 end
 
 function _nominal_reentry_dynamics_si(
@@ -184,15 +182,15 @@ function _nominal_reentry_dynamics_si(
 
 	m = 3257.0
 	S = 15.904
-	μ = 4.2828372e13
-	R = 3396200.0
+	μ = 3.986004418e14
+	R = 6378137.0
 	a0 = -0.20704
 	a1 = 0.029244
 	b0 = 0.07854
 	b1 = -0.61592e-2
 	b2 = 0.621408e-3
 
-	ρ = _tracking_polyfit_density(h)
+	ρ = earth_atmosphere_density(h)
 	α_deg = rad2deg(α)
 	cL = a0 + a1 * α_deg
 	cD = b0 + b1 * α_deg + b2 * α_deg^2
@@ -227,26 +225,9 @@ function _generated_continuous_linearization_si(
 	x_ref::AbstractVector{<:Real},
 	u_ref::AbstractVector{<:Real},
 )
-	h_ft = Float64(x_ref[1]) * _FT_PER_METER
-	φ = Float64(x_ref[2])
-	θ = Float64(x_ref[3])
-	v_fts = Float64(x_ref[4]) * _FT_PER_METER
-	γ = Float64(x_ref[5])
-	ψ = Float64(x_ref[6])
-	α = Float64(u_ref[1])
-	β = Float64(u_ref[2])
-
-	Ac_english = zeros(6, 6)
-	Bc_english = zeros(6, 2)
-	eval_Ac!(Ac_english, h_ft, φ, θ, v_fts, γ, ψ, α, β)
-	eval_Bc!(Bc_english, h_ft, φ, θ, v_fts, γ, ψ, α, β)
-
-	scale_english_from_si = Diagonal([_FT_PER_METER, 1.0, 1.0, _FT_PER_METER, 1.0, 1.0])
-	scale_si_from_english = inv(scale_english_from_si)
-	Ac_si = Matrix(scale_si_from_english * Ac_english * scale_english_from_si)
-	Bc_si = Matrix(scale_si_from_english * Bc_english)
-
-	return Ac_si, Bc_si
+	z_ref = Float64.([x_ref; u_ref])
+	J = _finite_difference_jacobian(z -> _nominal_reentry_dynamics_si(z[1:6], z[7:8]), z_ref)
+	return J[:, 1:6], J[:, 7:8]
 end
 
 function _generated_discrete_linearization_si(
@@ -581,7 +562,7 @@ function trackingmpc(integrator)
 		X_ref[:, j] .= xref_at(prediction_times[j])
 	end
 
-	U_ref = reduce(hcat, (_reference_control_at(τ, current_control_fallback) for τ in model_times))
+	U_ref = _reference_control_matrix(model_times, current_control_fallback)
 	ek = xk - x_ref_now
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
 	# Use the reference at the *previous* step as the baseline so that
@@ -613,7 +594,7 @@ function trackingmpc(integrator)
 	#   γ/θ: 0.01 rad → s = 0.01
 	# Previous Qs[h]=10, Qs[v]=10 gave effective weights 1e9× smaller than angles;
 	# the fix is to raise them proportionally.
-	Qs = Diagonal([1000.0, 5000.0, 5000.0, 1000.0, 500.0, 1000.0])
+	Qs = Diagonal([1000.0, 3000.0, 3000.0, 1000.0, 500.0, 1000.0])
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	# Keep controls free enough to reject model mismatch, but avoid using bank as
 	# a nearly-free crossrange actuator when its predicted benefit is ambiguous.
@@ -621,7 +602,7 @@ function trackingmpc(integrator)
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([5000.0, 10000.0, 10000.0, 3000.0, 1000.0, 3000.0])
+	P_normalized = Diagonal([1000.0, 150000.0, 150000.0, 3000.0, 1000.0, 3000.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
 	αmin = deg2rad(-90.0)
