@@ -5,13 +5,16 @@ using CSV
 using DataFrames
 using Plots
 include("../model/earth_atmosphere_polyfit.jl")
+include("../model/vehicle.jl")
+include("control_limits.jl")
+plotly()
 # Global variables
-const m = 3257.0    # mass (kg)
+const m = VEHICLE.mass    # mass (kg)
 
 # Aerodynamic and atmospheric forces on the vehicle
 const Rₑ = 6378137.0 # Radius of Earth (m, WGS84 equatorial)
 const μ = 3.986004418e14 # Earth gravitational parameter (m^3/sec^2)
-const S = 15.904 # Reference area (m^2)
+const S = VEHICLE.reference_area # Reference area (m^2)
 # const cD = 1.46 # Drag coefficient
 # const cL = 0.24 * cD # Lift coefficient
 
@@ -29,17 +32,17 @@ const m_exp = 4.512 # Exponent for convective heat rate calculation
 const H_SCALE = 1e5  # Altitude scaling factor
 const V_SCALE = 1e4  # Velocity scaling factor
 const h_s = 125.0e3 / H_SCALE          # altitude (m) / 1e5
-const ϕ_s = deg2rad(126.7)   # longitude (rad)
-const θ_s = deg2rad(-3.93)   # latitude (rad)
-const v_s = 5845.39 / V_SCALE         # velocity (m/sec) / 1e4
-const γ_s = deg2rad(-15.49)  # flight path angle (rad)
+const ϕ_s = deg2rad(0.0)   # longitude (rad)
+const θ_s = deg2rad(0.0)   # latitude (rad)
+const v_s = 7200.0 / V_SCALE         # velocity (m/sec) / 1e4
+const γ_s = deg2rad(-1.0)  # flight path angle (rad)
 const ψ_s = deg2rad(90.0)  # azimuth (rad)
 const α_s = deg2rad(0)   # angle of attack (rad)
 const β_s = deg2rad(0)   # bank angle (rad)
 const t_s = 0.33         # time step (sec)
 
 # Final conditions, the so-called Terminal Area Energy Management (TAEM)
-const h_t = 11848.0 / H_SCALE          # altitude (m) / 1e5
+const h_t = 25000.0 / H_SCALE          # altitude (m) / 1e5
 const v_t = 700.0 / V_SCALE         # velocity (m/sec) / 1e4
 const γ_t = deg2rad(-5.0)  # flight path angle (rad)
 
@@ -78,8 +81,11 @@ model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
     deg2rad(-90) ≤ α[1:n] ≤ deg2rad(90)  # angle of attack (rad)
     deg2rad(-89) ≤ β[1:n] ≤ deg2rad(89)  # bank angle (rad)
     0.1 ≤       Δt[1:n] ≤ 1.0          # time step (sec)
-    0.0 <= lat_slack <= deg2rad(3.0)  # terminal latitude slack (rad)
-    0.0 <= lon_slack <= deg2rad(3.0)  # terminal longitude slack (rad)
+    0.0 <= lat_slack <= deg2rad(1.0)  # terminal latitude slack (rad)
+    0.0 <= lon_slack <= deg2rad(1.0)  # terminal longitude slack (rad)
+    0.0 <= altitude_slack             # terminal altitude slack, scaled by H_SCALE
+    0.0 <= velocity_slack             # terminal velocity slack, scaled by V_SCALE
+    0.0 <= flight_path_angle_slack <= deg2rad(1.0) # terminal flight-path angle slack (rad)
     # 0.0 <= q_dot[1:n] <= 269.0               # heat rate (W/m^2)
     # 0.0 <= q[1:n] <= 6200.0                  # heat load (J/m^2)
     # Δt[1:n] == 4.0         # time step (sec)
@@ -92,11 +98,13 @@ fix(θ[1], θ_s; force = true)
 fix(scaled_v[1], v_s; force = true)
 fix(γ[1], γ_s; force = true)
 fix(ψ[1], ψ_s; force = true)
+fix(α[1], α_s; force = true)
+fix(β[1], β_s; force = true)
 # fix(q_dot[1], 0.0; force = true)
 # fix(q[1], 0.0; force = true)
 
-# Fix final conditions
-fix(scaled_h[n], h_t; force = true)
+# Terminal conditions are enforced softly below with slack variables.
+# fix(scaled_h[n], h_t; force = true)
 # fix(scaled_v[n], v_t; force = true)
 # fix(γ[n], γ_t; force = true)
 # fix(θ[n], deg2rad(-4.5); force = true)  # Target latitude in radians
@@ -118,6 +126,9 @@ set_start_value.(β, initial_guess[:, 8])
 set_start_value.(Δt, initial_guess[:, 9])
 set_start_value(lat_slack, 0.0)
 set_start_value(lon_slack, 0.0)
+set_start_value(altitude_slack, 0.0)
+set_start_value(velocity_slack, 0.0)
+set_start_value(flight_path_angle_slack, 0.0)
 
 # Functions to restore `h` and `v` to their true scale
 @expression(model, h[j=1:n], scaled_h[j] * H_SCALE)
@@ -151,109 +162,39 @@ set_start_value(lon_slack, 0.0)
     (v[j] / (r[j] * cos(θ[j]))) * cos(γ[j]) * sin(ψ[j]) * sin(θ[j])
 )
 
-# System dynamics
-if integration_rule == "rk4"
-    # Precompute RK4 k-values for all knots
-    @expression(model, k1_dh[j=1:n], δh[j])
-    @expression(model, k1_dϕ[j=1:n], δϕ[j])
-    @expression(model, k1_dθ[j=1:n], δθ[j])
-    @expression(model, k1_dv[j=1:n], δv[j])
-    @expression(model, k1_dγ[j=1:n], δγ[j])
-    @expression(model, k1_dψ[j=1:n], δψ[j])
+function reentry_rhs_expressions(model, hq, ϕq, θq, vq, γq, ψq, αq, βq)
+    cLq = @expression(model, a₀ + a₁ * rad2deg(αq))
+    cDq = @expression(model, b₀ + b₁ * rad2deg(αq) + b₂ * rad2deg(αq)^2)
+    ρq = @expression(model, earth_density_op(hq))
+    Dq = @expression(model, 0.5 * cDq * S * ρq * vq^2)
+    Lq = @expression(model, 0.5 * cLq * S * ρq * vq^2)
+    rq = @expression(model, Rₑ + hq)
+    gq = @expression(model, μ / rq^2)
 
-    @expression(
+    dh = @expression(model, vq * sin(γq))
+    dϕ = @expression(model, (vq / rq) * cos(γq) * sin(ψq) / cos(θq))
+    dθ = @expression(model, (vq / rq) * cos(γq) * cos(ψq))
+    dv = @expression(model, -(Dq / m) - gq * sin(γq))
+    dγ = @expression(
         model,
-        k2_dh[j=1:n],
-        δh[j] + 0.5 * Δt[j] * k1_dh[j]
+        (Lq / (m * vq)) * cos(βq) +
+        cos(γq) * ((vq / rq) - (gq / vq))
     )
-    @expression(
+    dψ = @expression(
         model,
-        k2_dϕ[j=1:n],
-        δϕ[j] + 0.5 * Δt[j] * k1_dϕ[j]
-    )
-    @expression(
-        model,
-        k2_dθ[j=1:n],
-        δθ[j] + 0.5 * Δt[j] * k1_dθ[j]
-    )
-    @expression(
-        model,
-        k2_dv[j=1:n],
-        δv[j] + 0.5 * Δt[j] * k1_dv[j]
-    )
-    @expression(
-        model,
-        k2_dγ[j=1:n],
-        δγ[j] + 0.5 * Δt[j] * k1_dγ[j]
-    )
-    @expression(
-        model,
-        k2_dψ[j=1:n],
-        δψ[j] + 0.5 * Δt[j] * k1_dψ[j]
+        (1 / (m * vq * cos(γq))) * Lq * sin(βq) +
+        (vq / (rq * cos(θq))) * cos(γq) * sin(ψq) * sin(θq)
     )
 
-    @expression(
-        model,
-        k3_dh[j=1:n],
-        δh[j] + 0.5 * Δt[j] * k2_dh[j]
-    )
-    @expression(
-        model,
-        k3_dϕ[j=1:n],
-        δϕ[j] + 0.5 * Δt[j] * k2_dϕ[j]
-    )
-    @expression(
-        model,
-        k3_dθ[j=1:n],
-        δθ[j] + 0.5 * Δt[j] * k2_dθ[j]
-    )
-    @expression(
-        model,
-        k3_dv[j=1:n],
-        δv[j] + 0.5 * Δt[j] * k2_dv[j]
-    )
-    @expression(
-        model,
-        k3_dγ[j=1:n],
-        δγ[j] + 0.5 * Δt[j] * k2_dγ[j]
-    )
-    @expression(
-        model,
-        k3_dψ[j=1:n],
-        δψ[j] + 0.5 * Δt[j] * k2_dψ[j]
-    )
-    @expression(
-        model,
-        k4_dh[j=1:n],
-        δh[j] + Δt[j] * k3_dh[j]
-    )
-    @expression(
-        model,
-        k4_dϕ[j=1:n],
-        δϕ[j] + Δt[j] * k3_dϕ[j]
-    )
-    @expression(
-        model,
-        k4_dθ[j=1:n],
-        δθ[j] + Δt[j] * k3_dθ[j]
-    )
-    @expression(
-        model,
-        k4_dv[j=1:n],
-        δv[j] + Δt[j] * k3_dv[j]
-    )
-    @expression(
-        model,
-        k4_dγ[j=1:n],
-        δγ[j] + Δt[j] * k3_dγ[j]
-    )
-    @expression(
-        model,
-        k4_dψ[j=1:n],
-        δψ[j] + Δt[j] * k3_dψ[j]
-    )
+    return dh, dϕ, dθ, dv, dγ, dψ
 end
+
 # @constraint(model, q_dot .<= 269.0)  # Heat rate constraint
+@constraint(model, [j=2:n], α[j] - α[j - 1] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[1] * Δt[j - 1])
+@constraint(model, [j=2:n], α[j - 1] - α[j] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[1] * Δt[j - 1])
+@constraint(model, [j=2:n], β[j] - β[j - 1] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[2] * Δt[j - 1])
+@constraint(model, [j=2:n], β[j - 1] - β[j] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[2] * Δt[j - 1])
+
 # Dynamics constraints
 for j in 2:n
     i = j - 1  # index of previous knot
@@ -276,13 +217,46 @@ for j in 2:n
         @constraint(model, ψ[j] == ψ[i] + 0.5 * Δt[i] * (δψ[j] + δψ[i]))
         
     elseif integration_rule == "rk4"
-        # Runge-Kutta 4th order integration from step i to j
-        @constraint(model, h[j] == h[i] + (Δt[i] / 6) * (k1_dh[i] + 2 * k2_dh[i] + 2 * k3_dh[i] + k4_dh[i]))
-        @constraint(model, ϕ[j] == ϕ[i] + (Δt[i] / 6) * (k1_dϕ[i] + 2 * k2_dϕ[i] + 2 * k3_dϕ[i] + k4_dϕ[i]))
-        @constraint(model, θ[j] == θ[i] + (Δt[i] / 6) * (k1_dθ[i] + 2 * k2_dθ[i] + 2 * k3_dθ[i] + k4_dθ[i]))
-        @constraint(model, v[j] == v[i] + (Δt[i] / 6) * (k1_dv[i] + 2 * k2_dv[i] + 2 * k3_dv[i] + k4_dv[i]))
-        @constraint(model, γ[j] == γ[i] + (Δt[i] / 6) * (k1_dγ[i] + 2 * k2_dγ[i] + 2 * k3_dγ[i] + k4_dγ[i]))
-        @constraint(model, ψ[j] == ψ[i] + (Δt[i] / 6) * (k1_dψ[i] + 2 * k2_dψ[i] + 2 * k3_dψ[i] + k4_dψ[i]))
+        # RK4 with linearly interpolated controls over the interval [i, j].
+        α_mid = @expression(model, 0.5 * (α[i] + α[j]))
+        β_mid = @expression(model, 0.5 * (β[i] + β[j]))
+
+        k1_h, k1_ϕ, k1_θ, k1_v, k1_γ, k1_ψ =
+            reentry_rhs_expressions(model, h[i], ϕ[i], θ[i], v[i], γ[i], ψ[i], α[i], β[i])
+
+        h2 = @expression(model, h[i] + 0.5 * Δt[i] * k1_h)
+        ϕ2 = @expression(model, ϕ[i] + 0.5 * Δt[i] * k1_ϕ)
+        θ2 = @expression(model, θ[i] + 0.5 * Δt[i] * k1_θ)
+        v2 = @expression(model, v[i] + 0.5 * Δt[i] * k1_v)
+        γ2 = @expression(model, γ[i] + 0.5 * Δt[i] * k1_γ)
+        ψ2 = @expression(model, ψ[i] + 0.5 * Δt[i] * k1_ψ)
+        k2_h, k2_ϕ, k2_θ, k2_v, k2_γ, k2_ψ =
+            reentry_rhs_expressions(model, h2, ϕ2, θ2, v2, γ2, ψ2, α_mid, β_mid)
+
+        h3 = @expression(model, h[i] + 0.5 * Δt[i] * k2_h)
+        ϕ3 = @expression(model, ϕ[i] + 0.5 * Δt[i] * k2_ϕ)
+        θ3 = @expression(model, θ[i] + 0.5 * Δt[i] * k2_θ)
+        v3 = @expression(model, v[i] + 0.5 * Δt[i] * k2_v)
+        γ3 = @expression(model, γ[i] + 0.5 * Δt[i] * k2_γ)
+        ψ3 = @expression(model, ψ[i] + 0.5 * Δt[i] * k2_ψ)
+        k3_h, k3_ϕ, k3_θ, k3_v, k3_γ, k3_ψ =
+            reentry_rhs_expressions(model, h3, ϕ3, θ3, v3, γ3, ψ3, α_mid, β_mid)
+
+        h4 = @expression(model, h[i] + Δt[i] * k3_h)
+        ϕ4 = @expression(model, ϕ[i] + Δt[i] * k3_ϕ)
+        θ4 = @expression(model, θ[i] + Δt[i] * k3_θ)
+        v4 = @expression(model, v[i] + Δt[i] * k3_v)
+        γ4 = @expression(model, γ[i] + Δt[i] * k3_γ)
+        ψ4 = @expression(model, ψ[i] + Δt[i] * k3_ψ)
+        k4_h, k4_ϕ, k4_θ, k4_v, k4_γ, k4_ψ =
+            reentry_rhs_expressions(model, h4, ϕ4, θ4, v4, γ4, ψ4, α[j], β[j])
+
+        @constraint(model, h[j] == h[i] + (Δt[i] / 6) * (k1_h + 2 * k2_h + 2 * k3_h + k4_h))
+        @constraint(model, ϕ[j] == ϕ[i] + (Δt[i] / 6) * (k1_ϕ + 2 * k2_ϕ + 2 * k3_ϕ + k4_ϕ))
+        @constraint(model, θ[j] == θ[i] + (Δt[i] / 6) * (k1_θ + 2 * k2_θ + 2 * k3_θ + k4_θ))
+        @constraint(model, v[j] == v[i] + (Δt[i] / 6) * (k1_v + 2 * k2_v + 2 * k3_v + k4_v))
+        @constraint(model, γ[j] == γ[i] + (Δt[i] / 6) * (k1_γ + 2 * k2_γ + 2 * k3_γ + k4_γ))
+        @constraint(model, ψ[j] == ψ[i] + (Δt[i] / 6) * (k1_ψ + 2 * k2_ψ + 2 * k3_ψ + k4_ψ))
     else
         @error "Unexpected integration rule '$(integration_rule)'"
     end
@@ -291,23 +265,35 @@ end
 
 # Heating constraints
 # Objective: Reach target latitude and longitude
-target_latitude = deg2rad(-4.2)  # Target latitude in radians
-target_longitude = deg2rad(133.4)  # Target longitude in radians
+target_latitude = deg2rad(3.0)  # Target latitude in radians
+target_longitude = deg2rad(25.0)  # Target longitude in radians
 @expression(model, latitude_error, θ[n] - target_latitude)
 @expression(model, longitude_error, ϕ[n] - target_longitude)
 
 # Soft terminal constraints: slack bounds the absolute terminal miss in each axis.
-@constraint(model, latitude_error <= lat_slack)
-@constraint(model, -latitude_error <= lat_slack)
-@constraint(model, longitude_error <= lon_slack)
-@constraint(model, -longitude_error <= lon_slack)
-# @constraint(model, γ[n] >= deg2rad(-6.0))
-@expression(model, altitude_error, h[n] / H_SCALE - h_t)  # Target altitude in meters
-@expression(model, velocity_error, v[n] / V_SCALE - v_t) # Target velocity in m/s
+# @constraint(model, latitude_error <= lat_slack)
+# @constraint(model, -latitude_error <= lat_slack)
+# @constraint(model, longitude_error <= lon_slack)
+# @constraint(model, -longitude_error <= lon_slack)
+@constraint(model, scaled_h[1:(n-1)] .>= h_t)  # Hard constraint on altitude to ensure we don't end up underground
+@expression(model, altitude_error, scaled_h[n] - h_t)
+@expression(model, velocity_error, scaled_v[n] - v_t)
 @expression(model, flight_path_angle_error, γ[n] - γ_t) # Target flight path angle in radians
-# @constraint(model, altitude_error^2 <= (1000.0)^2)  # Altitude error constraint
-# @constraint(model, velocity_error^2 <= (10.0)^2)  # Velocity error constraint
-@objective(model, Min, 1.0e4 * lat_slack^2 + 1.0e4 * lon_slack^2)  # Minimize total time and terminal miss slacks
+@constraint(model, altitude_error <= altitude_slack)
+@constraint(model, -altitude_error <= altitude_slack)
+@constraint(model, velocity_error <= velocity_slack)
+@constraint(model, -velocity_error <= velocity_slack)
+@constraint(model, flight_path_angle_error <= flight_path_angle_slack)
+@constraint(model, -flight_path_angle_error <= flight_path_angle_slack)
+@objective(
+    model,
+    Min,
+    1.0e4 * lat_slack^2 +
+    1.0e4 * lon_slack^2 +
+    1.0e6 * altitude_slack^2 +
+    1.0e6 * velocity_slack^2 +
+    1.0e5 * flight_path_angle_slack^2,
+)
 
 # set_silent(model)  # Hide solver's verbose output
 set_attribute(model, "tol", 1e-6)  # Set solver tolerance

@@ -2,7 +2,7 @@ using LinearAlgebra
 using DifferentialEquations
 using StaticArrays
 
-function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::EDLParams, t::Float64)
+function edl_dynamics(du::MVector{7, Float64}, u::MVector{7, Float64}, p::ModelTypes.EDLParams, t::Float64)
     h, ϕ, θ, v, γ, ψ, q = u
     m = p.mass
     # Cd = p.Cd

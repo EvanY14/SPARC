@@ -67,14 +67,21 @@ function _mpg_shift_warm_start(prev::Vector{Float64}, N::Int, m::Int)
 	return [prev[m + 1:end]; zeros(m)]
 end
 
-function _solve_mpg_box_qp(P_qp::Matrix{Float64}, q_qp::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64}; warm_start::Vector{Float64} = Float64[])
+function _solve_mpg_qp(
+	P_qp::Matrix{Float64},
+	q_qp::Vector{Float64},
+	A_qp::AbstractMatrix{Float64},
+	lb::Vector{Float64},
+	ub::Vector{Float64};
+	warm_start::Vector{Float64} = Float64[],
+)
 	nz = length(q_qp)
 	model = OSQP.Model()
 	OSQP.setup!(
 		model,
 		P = sparse(triu(P_qp)),
 		q = q_qp,
-		A = sparse(Matrix{Float64}(I, nz, nz)),
+		A = sparse(A_qp),
 		l = lb,
 		u = ub,
 		warm_starting = true,
@@ -89,6 +96,55 @@ function _solve_mpg_box_qp(P_qp::Matrix{Float64}, q_qp::Vector{Float64}, lb::Vec
 	end
 	result = OSQP.solve!(model)
 	return result.x, lowercase(String(result.info.status))
+end
+
+function _mpg_control_constraint_matrices(
+	U_nodes::Matrix{Float64},
+	previous_u::AbstractVector{<:Real},
+	step_sizes::AbstractVector{<:Real},
+	dt_first::Real,
+)
+	m, nodes = size(U_nodes)
+	nz = m * nodes
+	rows = m * nodes + m * (nodes - 1) + m
+	A = zeros(rows, nz)
+	lb = fill(-Inf, rows)
+	ub = fill(Inf, rows)
+
+	row = 1
+	for k in 1:nodes
+		for i in 1:m
+			col = (k - 1) * m + i
+			A[row, col] = 1.0
+			lb[row] = _CONTROL_MIN_RAD[i] - U_nodes[i, k]
+			ub[row] = _CONTROL_MAX_RAD[i] - U_nodes[i, k]
+			row += 1
+		end
+	end
+
+	du_first = _CONTROL_RATE_LIMIT_RAD_PER_SEC .* Float64(dt_first)
+	for i in 1:m
+		A[row, i] = 1.0
+		lb[row] = Float64(previous_u[i]) - du_first[i] - U_nodes[i, 1]
+		ub[row] = Float64(previous_u[i]) + du_first[i] - U_nodes[i, 1]
+		row += 1
+	end
+
+	for k in 2:nodes
+		du_max = _CONTROL_RATE_LIMIT_RAD_PER_SEC .* Float64(step_sizes[k - 1])
+		for i in 1:m
+			prev_col = (k - 2) * m + i
+			col = (k - 1) * m + i
+			A[row, col] = 1.0
+			A[row, prev_col] = -1.0
+			ref_delta = U_nodes[i, k] - U_nodes[i, k - 1]
+			lb[row] = -du_max[i] - ref_delta
+			ub[row] = du_max[i] - ref_delta
+			row += 1
+		end
+	end
+
+	return A, lb, ub
 end
 
 function model_predictive_guidance(integrator)
@@ -125,7 +181,14 @@ function model_predictive_guidance(integrator)
 	A = Vector{Matrix{Float64}}(undef, N + 1)
 	B = Vector{Matrix{Float64}}(undef, N + 1)
 	for k in 1:N + 1
-		A[k], B[k] = _generated_continuous_linearization_si(X_nodes[:, k], U_nodes[:, k])
+		A[k], B[k] = _generated_continuous_linearization_si(
+			X_nodes[:, k],
+			U_nodes[:, k];
+			mass = integrator.p.mass,
+			area = integrator.p.area,
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+		)
 	end
 
 	Φ, Ψ = _mpg_heun_prediction_matrices(A, B, step_sizes)
@@ -155,24 +218,21 @@ function model_predictive_guidance(integrator)
 	q_qp .+= kF .* (Ψ[N + 1]' * (F * (Φ[N + 1] * dx0)))
 	P_qp = 0.5 .* (P_qp .+ P_qp') .+ 1.0e-9 .* Matrix{Float64}(I, nz, nz)
 
-	αmin = deg2rad(-90.0)
-	αmax = deg2rad(90.0)
-	βmin = deg2rad(-89.0)
-	βmax = deg2rad(89.0)
-	u_min = [αmin, βmin]
-	u_max = [αmax, βmax]
-	du_limit = deg2rad.([15.0, 15.0])
-
-	lb = zeros(nz)
-	ub = zeros(nz)
-	for k in 1:N + 1
-		du_rng = (m * (k - 1) + 1):(m * k)
-		lb[du_rng] .= max.(u_min .- U_nodes[:, k], .-du_limit)
-		ub[du_rng] .= min.(u_max .- U_nodes[:, k], du_limit)
+	u_min = _CONTROL_MIN_RAD
+	u_max = _CONTROL_MAX_RAD
+	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[n + 1:n + m])
+	if !all(isfinite, prev_u) || norm(prev_u) == 0.0
+		prev_u .= [Float64(integrator.p.α), Float64(integrator.p.β)]
 	end
+	A_qp, lb, ub = _mpg_control_constraint_matrices(
+		U_nodes,
+		prev_u,
+		step_sizes,
+		_control_step_size(integrator),
+	)
 
 	warm_start = _mpg_shift_warm_start(integrator.p.mpc_params.prev_ΔU[], N, m)
-	du_star, status = _solve_mpg_box_qp(P_qp, q_qp, lb, ub; warm_start = warm_start)
+	du_star, status = _solve_mpg_qp(P_qp, q_qp, A_qp, lb, ub; warm_start = warm_start)
 	if !(status in ("solved", "solved inaccurate"))
 		@warn "MPg OSQP solve returned status $status; falling back to reference control"
 		du_star = zeros(nz)

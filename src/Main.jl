@@ -1,9 +1,17 @@
-using Revise
-includet("model/SimulatorModel.jl")
-
+try
+    using Revise
+    includet("model/SimulatorModel.jl")
+catch err
+    if err isa ArgumentError && occursin("Package Revise not found", sprint(showerror, err))
+        include("model/SimulatorModel.jl")
+    else
+        rethrow()
+    end
+end
 using .SimulatorModel
 using StaticArrays
-if !haskey(ENV, "DISPLAY") && !haskey(ENV, "GKSwstype")
+const BROWSER_PLOTS_AVAILABLE = haskey(ENV, "DISPLAY") && !isempty(ENV["DISPLAY"]) && Sys.which("xdg-open") !== nothing
+if !BROWSER_PLOTS_AVAILABLE && !haskey(ENV, "GKSwstype")
     ENV["GKSwstype"] = "100"
 end
 using Plots
@@ -11,20 +19,25 @@ using DifferentialEquations
 using CSV
 using DataFrames
 using Interpolations
-gr()
-# Define initial conditions and parameters
-h0 = 125000.0      # Initial altitude in meters
-ϕ0 = deg2rad(126.7)            # Initial longitude in radians
-θ0 = deg2rad(-3.93)            # Initial latitude in radians
-v0 = 5845.39         # Initial velocity in m/s
-γ0 = deg2rad(-15.49) # Initial flight path angle in radians
-ψ0 = deg2rad(90.0) # Initial azimuth angle in radians
+include("reference/trajectory_initialization.jl")
+BROWSER_PLOTS_AVAILABLE ? plotly() : gr()
 
-u0 = MVector{7, Float64}(h0, ϕ0, θ0, v0, γ0, ψ0, 0.0) # Initial state vector
-tspan = (0.0, 500.0) # Time span for the simulation
+optimal_control = CSV.read("optimal_trajectory.csv", DataFrame)
+init = reference_initial_conditions(optimal_control)
+tspan = init.tspan
+
+h0 = init.h0
+ϕ0 = init.ϕ0
+θ0 = init.θ0
+v0 = init.v0
+γ0 = init.γ0
+ψ0 = init.ψ0
+
+u0 = MVector{7, Float64}(h0, ϕ0, θ0, v0, γ0, ψ0, 0.0)
+
 # Define EDL parameters
-mass = 3257.0 # kg
-area = 15.904 # m^2
+mass = SimulatorModel.VEHICLE.mass
+area = SimulatorModel.VEHICLE.reference_area
 const μ = 3.986004418e14 # m^3/s^2 for Earth
 R = 6378137.0 # m for Earth (WGS84 equatorial radius)
 
@@ -46,7 +59,6 @@ function cartesian_histories_km(altitudes, longitudes, latitudes, planet_radius)
     return x, y, z
 end
 
-optimal_control = CSV.read("optimal_trajectory.csv", DataFrame)
 interp_optimal_control = linear_interpolation(optimal_control.Time_s, optimal_control.BankAngle_deg, extrapolation_bc=Line())
 interp_optimal_alpha = linear_interpolation(optimal_control.Time_s, optimal_control.AngleOfAttack_deg, extrapolation_bc=Line())
 β = (integrator) -> deg2rad(interp_optimal_control(integrator.t)) # Bank angle function in radians
@@ -78,17 +90,17 @@ display(plot(optimal_ref_x_km, optimal_ref_y_km, xlabel="X (km)", ylabel="Y (km)
 # β = () -> deg2rad(rand() * 90.0 - 45.0) # Bank angle in radians
 
 # Define target states
-target_altitude = 11848.0 # Termination altitude in meters
-target_velocity = 500.0 # Target final velocity in m/s
+target_altitude = 25000.0 # Termination altitude in meters
+target_velocity = 700.0 # Target final velocity in m/s
 target_γ = deg2rad(-5.0) # Target final flight path angle in radians
-target_states = TargetStates(altitude=target_altitude, longitude=deg2rad(137.4), latitude=deg2rad(-4.5), velocity=target_velocity, flight_path_angle=target_γ)
+target_states = SimulatorModel.TargetStates(altitude=target_altitude, longitude=deg2rad(133.4), latitude=deg2rad(-4.5), velocity=target_velocity, flight_path_angle=target_γ)
 
 # Define the atmospheric model
-gram_atmosphere = GramAtmosphere("GRAMpy/", "GRAM_Data", false, "earth", DateTime(2012, 8, 6, 5, 10, 46.0), false)
+gram_atmosphere = SimulatorModel.GramAtmosphere("GRAMpy/", "GRAM_Data", false, "earth", SimulatorModel.DateTime(2012, 8, 6, 5, 10, 46.0), false)
 # Define integration parameters and run each controller with independent MPC state.
 function reset_saved_values!()
-    empty!(saved_values.t)
-    empty!(saved_values.saveval)
+    empty!(SimulatorModel.saved_values.t)
+    empty!(SimulatorModel.saved_values.saveval)
 end
 
 function extract_saved_histories(saved_data)
@@ -106,17 +118,24 @@ function extract_saved_histories(saved_data)
 end
 
 function make_edl_params(control_function)
-    mpc_params = MPCParams{100, 7, 8, 0.1}(n_horizon=100, time_step=1.0, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
-    return EDLParams(mass = mass, area = area, μ = μ, R = R, control_function = control_function, β = β0_ref, α = α0_ref, atmospheric_density_function = (LatLonAlt, t) -> atmospheric_density(LatLonAlt, t, gram_atmosphere, false), atmospheric_density = 0.0, wind = SVector{3, Float64}(zeros(3)), target_states = target_states, optimization_states = OptimizationStates(), nominal_trajectory = optimal_trajectory, cache = EDLCache(), mpc_params = mpc_params)
+    mpc_params = SimulatorModel.MPCParams{100, 7, 8, 0.1}(n_horizon=50, time_step=0.5, H_SCALE=1.0e5, V_SCALE=1.0e4, T_SCALE=1.0, n_exp=4.512, m_exp=0.82958, learning_rate=0.1)
+    return SimulatorModel.EDLParams(mass = mass, area = area, μ = μ, R = R, control_function = control_function, β = β0_ref, α = α0_ref, atmospheric_density_function = (LatLonAlt, t) -> SimulatorModel.atmospheric_density(LatLonAlt, t, gram_atmosphere, false), atmospheric_density = 0.0, wind = SVector{3, Float64}(zeros(3)), target_states = target_states, optimization_states = SimulatorModel.OptimizationStates(), nominal_trajectory = optimal_trajectory, cache = SimulatorModel.EDLCache(), mpc_params = mpc_params)
 end
 
 function run_controller(control_function)
     reset_saved_values!()
     edl_params = make_edl_params(control_function)
-    callbacks = CallbackSet(altitude_termination_condition, atmospheric_density_callback, saving_callback, control_callback)
-    prob = ODEProblem(edl_dynamics, u0, tspan, edl_params, callback=callbacks)
+    callbacks = CallbackSet(SimulatorModel.altitude_termination_condition, SimulatorModel.atmospheric_density_callback, SimulatorModel.saving_callback, SimulatorModel.control_callback)
+    prob = ODEProblem(SimulatorModel.edl_dynamics, u0, tspan, edl_params, callback=callbacks)
     sol = solve(prob, Tsit5(), dt=0.1, adaptive=false)
-    return sol, edl_params, copy(saved_values.t), copy(saved_values.saveval)
+    return sol, edl_params, copy(SimulatorModel.saved_values.t), copy(SimulatorModel.saved_values.saveval)
+end
+
+function open_loop_control(integrator)
+    t = integrator.t
+    β_cmd = deg2rad(interp_optimal_control(t))
+    α_cmd = deg2rad(interp_optimal_alpha(t))
+    return β_cmd, α_cmd
 end
 
 function build_simulation_output(label, sol, saved_t, saved_data)
@@ -226,36 +245,56 @@ function build_simulation_output(label, sol, saved_t, saved_data)
     )
 end
 
-shrinking_sol, shrinking_params, shrinking_saved_t, shrinking_saved_data = run_controller(trackingmpc_shrinking)
-mpg_sol, mpg_params, mpg_saved_t, mpg_saved_data = run_controller(mpg)
+shrinking_sol, shrinking_params, shrinking_saved_t, shrinking_saved_data = run_controller(SimulatorModel.trackingmpc)
+mpg_sol, mpg_params, mpg_saved_t, mpg_saved_data = run_controller(SimulatorModel.mpg)
+open_loop_sol, open_loop_params, open_loop_saved_t, open_loop_saved_data = run_controller(open_loop_control)
+sm_mpg_sol, sm_mpg_params, sm_mpg_saved_t, sm_mpg_saved_data = run_controller(SimulatorModel.sm_mpg)
 
 shrinking = build_simulation_output("Shrinking horizon MPC", shrinking_sol, shrinking_saved_t, shrinking_saved_data)
 mpg_result = build_simulation_output("MPg", mpg_sol, mpg_saved_t, mpg_saved_data)
+open_loop_result = build_simulation_output("Open Loop", open_loop_sol, open_loop_saved_t, open_loop_saved_data)
+sm_mpg_result = build_simulation_output("SM-MPG", sm_mpg_sol, sm_mpg_saved_t, sm_mpg_saved_data)
 
 CSV.write("simulation_output_shrinking_mpc.csv", shrinking.df)
 CSV.write("simulation_output_mpg.csv", mpg_result.df)
-CSV.write("simulation_output.csv", vcat(shrinking.df, mpg_result.df))
+CSV.write("simulation_output_open_loop.csv", open_loop_result.df)
+CSV.write("simulation_output_sm_mpg.csv", sm_mpg_result.df)
+CSV.write("simulation_output.csv", vcat(shrinking.df, mpg_result.df, open_loop_result.df, sm_mpg_result.df))
 
 edl_altitude_plot = plot(shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_altitude_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label="MPg", linewidth=2)
+plot!(edl_altitude_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label="Open Loop", linewidth=2)
+plot!(edl_altitude_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label="SM-MPG", linewidth=2)
 display(edl_altitude_plot)
 edl_velocity_plot = plot(shrinking.sol.t, shrinking.sim_velocities ./ 1e3, xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_velocity_plot, mpg_result.sol.t, mpg_result.sim_velocities ./ 1e3, label="MPg", linewidth=2)
+plot!(edl_velocity_plot, open_loop_result.sol.t, open_loop_result.sim_velocities ./ 1e3, label="Open Loop", linewidth=2)
+plot!(edl_velocity_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_velocities ./ 1e3, label="SM-MPG", linewidth=2)
 display(edl_velocity_plot)
 edl_ground_track_plot = plot(shrinking.sim_x_km, shrinking.sim_y_km, xlabel="X (km)", ylabel="Y (km)", title="EDL Simulation: Cartesian Ground Track", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_ground_track_plot, mpg_result.sim_x_km, mpg_result.sim_y_km, label="MPg", linewidth=2)
+plot!(edl_ground_track_plot, open_loop_result.sim_x_km, open_loop_result.sim_y_km, label="Open Loop", linewidth=2)
+plot!(edl_ground_track_plot, sm_mpg_result.sim_x_km, sm_mpg_result.sim_y_km, label="SM-MPG", linewidth=2)
 display(edl_ground_track_plot)
 
 density_plot = plot(shrinking.saved_t[2:end], shrinking.densities[2:end], xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", label="Shrinking horizon MPC", yscale=:log10, linewidth=2)
 plot!(density_plot, mpg_result.saved_t[2:end], mpg_result.densities[2:end], label="MPg", linewidth=2)
+plot!(density_plot, open_loop_result.saved_t[2:end], open_loop_result.densities[2:end], label="Open Loop", linewidth=2)
+plot!(density_plot, sm_mpg_result.saved_t[2:end], sm_mpg_result.densities[2:end], label="SM-MPG", linewidth=2)
 display(density_plot)
 bank_profile_plot = plot(shrinking.saved_t, shrinking.betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", label="Shrinking horizon MPC", linewidth=2)
 plot!(bank_profile_plot, mpg_result.saved_t, mpg_result.betas .* (180 / π), label="MPg", linewidth=2)
+plot!(bank_profile_plot, open_loop_result.saved_t, open_loop_result.betas .* (180 / π), label="Open Loop", linewidth=2)
+plot!(bank_profile_plot, sm_mpg_result.saved_t, sm_mpg_result.betas .* (180 / π), label="SM-MPG", linewidth=2)
 display(bank_profile_plot)
 heat_rate_plot = plot(shrinking.saved_t, shrinking.heat_rates, xlabel="Time (s)", ylabel="Convective Heat Rate (W/m²)", title="Convective Heat Rate Profile", label="Shrinking horizon MPC", linewidth=2)
 plot!(heat_rate_plot, mpg_result.saved_t, mpg_result.heat_rates, label="MPg", linewidth=2)
+plot!(heat_rate_plot, open_loop_result.saved_t, open_loop_result.heat_rates, label="Open Loop", linewidth=2)
+plot!(heat_rate_plot, sm_mpg_result.saved_t, sm_mpg_result.heat_rates, label="SM-MPG", linewidth=2)
 heat_load_plot = plot(shrinking.sol.t, shrinking.sim_heat_loads, xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", label="Shrinking horizon MPC", linewidth=2)
 plot!(heat_load_plot, mpg_result.sol.t, mpg_result.sim_heat_loads, label="MPg", linewidth=2)
+plot!(heat_load_plot, open_loop_result.sol.t, open_loop_result.sim_heat_loads, label="Open Loop", linewidth=2)
+plot!(heat_load_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_heat_loads, label="SM-MPG", linewidth=2)
 display(plot(heat_rate_plot, heat_load_plot, layout=(2,1)))
 
 # Compare the tracked simulations and applied controls with the optimal reference
@@ -270,6 +309,8 @@ mpc_altitude_plot = plot(
 )
 plot!(mpc_altitude_plot, shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_altitude_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label = "MPg", linewidth = 2)
+plot!(mpc_altitude_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label = "Open Loop", linewidth = 2)
+plot!(mpc_altitude_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label = "SM-MPG", linewidth = 2)
 
 mpc_velocity_plot = plot(
     optimal_control.Time_s,
@@ -282,6 +323,8 @@ mpc_velocity_plot = plot(
 )
 plot!(mpc_velocity_plot, shrinking.sol.t, shrinking.sim_velocities, label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_velocity_plot, mpg_result.sol.t, mpg_result.sim_velocities, label = "MPg", linewidth = 2)
+plot!(mpc_velocity_plot, open_loop_result.sol.t, open_loop_result.sim_velocities, label = "Open Loop", linewidth = 2)
+plot!(mpc_velocity_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_velocities, label = "SM-MPG", linewidth = 2)
 
 mpc_fpa_plot = plot(
     optimal_control.Time_s,
@@ -294,6 +337,8 @@ mpc_fpa_plot = plot(
 )
 plot!(mpc_fpa_plot, shrinking.sol.t, rad2deg.(shrinking.sim_flight_paths), label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_fpa_plot, mpg_result.sol.t, rad2deg.(mpg_result.sim_flight_paths), label = "MPg", linewidth = 2)
+plot!(mpc_fpa_plot, open_loop_result.sol.t, rad2deg.(open_loop_result.sim_flight_paths), label = "Open Loop", linewidth = 2)
+plot!(mpc_fpa_plot, sm_mpg_result.sol.t, rad2deg.(sm_mpg_result.sim_flight_paths), label = "SM-MPG", linewidth = 2)
 display(plot(mpc_altitude_plot, mpc_velocity_plot, mpc_fpa_plot, layout = (3, 1), size = (900, 900)))
 
 mpc_ground_track_plot = plot(
@@ -319,6 +364,20 @@ plot!(
     label = "MPg",
     linewidth = 2,
 )
+plot!(
+    mpc_ground_track_plot,
+    open_loop_result.sim_x_km,
+    open_loop_result.sim_y_km,
+    label = "Open Loop",
+    linewidth = 2,
+)
+plot!(
+    mpc_ground_track_plot,
+    sm_mpg_result.sim_x_km,
+    sm_mpg_result.sim_y_km,
+    label = "SM-MPG",
+    linewidth = 2,
+)
 display(mpc_ground_track_plot)
 
 cartesian_position_plot = plot(
@@ -338,6 +397,12 @@ plot!(cartesian_position_plot, shrinking.sol.t, shrinking.sim_z_km, label = "MPC
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_x_km, label = "MPg X", linestyle = :dot, linewidth = 2)
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_y_km, label = "MPg Y", linestyle = :dot, linewidth = 2)
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_z_km, label = "MPg Z", linestyle = :dot, linewidth = 2)
+plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_x_km, label = "Open Loop X", linestyle = :dashdot, linewidth = 2)
+plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_y_km, label = "Open Loop Y", linestyle = :dashdot, linewidth = 2)
+plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_z_km, label = "Open Loop Z", linestyle = :dashdot, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_x_km, label = "SM-MPG X", linestyle = :dashdotdot, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_y_km, label = "SM-MPG Y", linestyle = :dashdotdot, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_z_km, label = "SM-MPG Z", linestyle = :dashdotdot, linewidth = 2)
 display(cartesian_position_plot)
 
 position_error_plot = plot(
@@ -350,6 +415,8 @@ position_error_plot = plot(
     linewidth = 2,
 )
 plot!(position_error_plot, mpg_result.sol.t, mpg_result.position_error_norm_km, label = "MPg", linewidth = 2)
+plot!(position_error_plot, open_loop_result.sol.t, open_loop_result.position_error_norm_km, label = "Open Loop", linewidth = 2)
+plot!(position_error_plot, sm_mpg_result.sol.t, sm_mpg_result.position_error_norm_km, label = "SM-MPG", linewidth = 2)
 display(position_error_plot)
 
 if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
@@ -364,6 +431,8 @@ if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
     )
     plot!(mpc_alpha_plot, shrinking.saved_t, rad2deg.(shrinking.alphas), label = "Shrinking horizon MPC", linewidth = 2)
     plot!(mpc_alpha_plot, mpg_result.saved_t, rad2deg.(mpg_result.alphas), label = "MPg", linewidth = 2)
+    plot!(mpc_alpha_plot, open_loop_result.saved_t, rad2deg.(open_loop_result.alphas), label = "Open Loop", linewidth = 2)
+    plot!(mpc_alpha_plot, sm_mpg_result.saved_t, rad2deg.(sm_mpg_result.alphas), label = "SM-MPG", linewidth = 2)
 
     mpc_bank_plot = plot(
         optimal_control.Time_s,
@@ -376,6 +445,8 @@ if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
     )
     plot!(mpc_bank_plot, shrinking.saved_t, rad2deg.(shrinking.betas), label = "Shrinking horizon MPC", linewidth = 2)
     plot!(mpc_bank_plot, mpg_result.saved_t, rad2deg.(mpg_result.betas), label = "MPg", linewidth = 2)
+    plot!(mpc_bank_plot, open_loop_result.saved_t, rad2deg.(open_loop_result.betas), label = "Open Loop", linewidth = 2)
+    plot!(mpc_bank_plot, sm_mpg_result.saved_t, rad2deg.(sm_mpg_result.betas), label = "SM-MPG", linewidth = 2)
     display(plot(mpc_alpha_plot, mpc_bank_plot, layout = (2, 1), size = (900, 650)))
 end
 
@@ -393,6 +464,8 @@ if !isempty(opt_states.h_c)
     )
     plot!(latest_prediction_plot, shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, label = "Shrinking horizon MPC", linewidth = 2)
     plot!(latest_prediction_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label = "MPg", linewidth = 2)
+    plot!(latest_prediction_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label = "Open Loop", linewidth = 2)
+    plot!(latest_prediction_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label = "SM-MPG", linewidth = 2)
     plot!(
         latest_prediction_plot,
         mpc_prediction_times,
@@ -403,3 +476,34 @@ if !isempty(opt_states.h_c)
     )
     display(latest_prediction_plot)
 end
+
+function plot_combined_state_errors(results_labels...)
+    p1 = plot(title="Altitude Error (m)", xlabel="Time (s)", legend=true)
+    p2 = plot(title="Longitude Error (deg)", xlabel="Time (s)", legend=true)
+    p3 = plot(title="Latitude Error (deg)", xlabel="Time (s)", legend=true)
+    p4 = plot(title="Velocity Error (m/s)", xlabel="Time (s)", legend=true)
+    p5 = plot(title="FPA Error (deg)", xlabel="Time (s)", legend=true)
+    p6 = plot(title="Azimuth Error (deg)", xlabel="Time (s)", legend=true)
+
+    for (res, label) in results_labels
+        df = res.df
+        t = df.Time_s
+        plot!(p1, t, df.Altitude_m .- df.ReferenceAltitude_m, label=label, linewidth=2)
+        plot!(p2, t, df.Longitude_deg .- df.ReferenceLongitude_deg, label=label, linewidth=2)
+        plot!(p3, t, df.Latitude_deg .- df.ReferenceLatitude_deg, label=label, linewidth=2)
+        plot!(p4, t, df.Velocity_mps .- df.ReferenceVelocity_mps, label=label, linewidth=2)
+        plot!(p5, t, df.FlightPath_deg .- df.ReferenceFlightPath_deg, label=label, linewidth=2)
+        plot!(p6, t, df.Azimuth_deg .- df.ReferenceAzimuth_deg, label=label, linewidth=2)
+    end
+
+    fig = plot(p1, p2, p3, p4, p5, p6, layout=(3, 2), size=(1200, 1000), margin=5Plots.mm, plot_title="State Tracking Errors")
+    display(fig)
+    return fig
+end
+
+plot_combined_state_errors(
+    (shrinking, "Shrinking horizon MPC"), 
+    (mpg_result, "MPg"),
+    (open_loop_result, "Open Loop"),
+    (sm_mpg_result, "SM-MPG")
+)

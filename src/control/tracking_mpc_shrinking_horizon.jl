@@ -1,11 +1,3 @@
-function _reference_time_bounds()
-	cache = _load_optimal_control_cache()
-	if cache === nothing
-		return nothing
-	end
-	return cache.t_min, cache.t_max
-end
-
 function _shrinking_horizon_times(t0::Real, dt::Real, max_horizon::Int)
 	max_horizon = max(max_horizon, 1)
 	bounds = _reference_time_bounds()
@@ -48,7 +40,7 @@ end
 function trackingmpc_shrinking_horizon(integrator)
 	dt = integrator.p.mpc_params.time_step
 	t0 = integrator.t
-	max_horizon = max(min(integrator.p.mpc_params.n_horizon, _TRACKING_MAX_HORIZON), 1)
+	max_horizon = max(integrator.p.mpc_params.n_horizon, 1)
 
 	xk = Vector{Float64}(integrator.u[1:6])
 	nu = 2
@@ -65,9 +57,25 @@ function trackingmpc_shrinking_horizon(integrator)
 		nominal[6](τ),
 	]
 
-	model_times, prediction_times, step_sizes = _shrinking_horizon_times(t0, dt, max_horizon)
+	energy_horizon = _TRACKING_USE_ENERGY_REFERENCE_ALIGNMENT ?
+		_energy_indexed_horizon(
+			xk,
+			t0,
+			dt,
+			max_horizon;
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+			shrinking = true,
+		) :
+		nothing
+	reference_time_now = energy_horizon === nothing ? Float64(t0) : energy_horizon.reference_time
+	model_times, prediction_times, step_sizes = if energy_horizon === nothing
+		_shrinking_horizon_times(t0, dt, max_horizon)
+	else
+		energy_horizon.model_times, energy_horizon.prediction_times, energy_horizon.physical_step_sizes
+	end
 	N = length(prediction_times)
-	x_ref_now = xref_at(t0)
+	x_ref_now = xref_at(reference_time_now)
 	X_ref = zeros(nx, N)
 	X_model = zeros(nx, N)
 	for j in 1:N
@@ -78,7 +86,7 @@ function trackingmpc_shrinking_horizon(integrator)
 	U_ref = _reference_control_matrix(model_times, current_control_fallback)
 	ek = xk - x_ref_now
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
-	uref_prev = _reference_control_at(t0 - dt, current_control_fallback)
+	uref_prev = _reference_control_at(model_times[1] - step_sizes[1], current_control_fallback)
 	if !all(isfinite, prev_u) || norm(prev_u) == 0.0
 		prev_u .= uref_prev
 	end
@@ -94,28 +102,44 @@ function trackingmpc_shrinking_horizon(integrator)
 
 	for j in 1:N
 		Δt = step_sizes[j]
-		A_seq[j], B_seq[j] = _generated_discrete_linearization_si(X_model[:, j], U_ref[:, j], Δt)
-		d_seq[j] = _nominal_reentry_step_si(X_model[:, j], U_ref[:, j], Δt) - X_ref[:, j]
+		A_seq[j], B_seq[j] = _generated_discrete_linearization_si(
+			X_model[:, j],
+			U_ref[:, j],
+			Δt;
+			mass = integrator.p.mass,
+			area = integrator.p.area,
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+		)
+		d_seq[j] = _nominal_reentry_step_si(
+			X_model[:, j],
+			U_ref[:, j],
+			Δt;
+			mass = integrator.p.mass,
+			area = integrator.p.area,
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+		) - X_ref[:, j]
 	end
 
-	Qs = Diagonal([100.0, 3000.0, 3000.0, 100.0, 500.0, 100.0])
+	# Emulate output-tracking: heavily weight Altitude, Lat, Lon. Relax v, γ, ψ.
+	Qs = Diagonal([100.0, 30000.0, 30000.0, 10.0, 10.0, 10.0])
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	Rv = Diagonal([1.0e-2, 0.1])
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([1000.0, 150000.0, 150000.0, 3000.0, 1000.0, 1000.0])
+	# Relax massive terminal weights to prevent late-trajectory chattering
+	P_normalized = Diagonal([1000.0, 3000.0, 3000.0, 100.0, 100.0, 100.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
-	αmin = deg2rad(-90.0)
-	αmax = deg2rad(90.0)
-	βmin = deg2rad(-89.0)
-	βmax = deg2rad(89.0)
+	αmin, βmin = _CONTROL_MIN_RAD
+	αmax, βmax = _CONTROL_MAX_RAD
 	U_ref_ext = hcat(uref_prev, U_ref)
 	ΔVmin = zeros(nu, N)
 	ΔVmax = zeros(nu, N)
 	for j in 1:N
-		Δumax_vec = _TRACKING_INPUT_RATE_LIMIT_RAD_PER_SEC .* step_sizes[j]
+		Δumax_vec = _CONTROL_RATE_LIMIT_RAD_PER_SEC .* step_sizes[j]
 		δu_ref_j = U_ref_ext[:, j + 1] - U_ref_ext[:, j]
 		ΔVmin[:, j] = -Δumax_vec - δu_ref_j
 		ΔVmax[:, j] =  Δumax_vec - δu_ref_j

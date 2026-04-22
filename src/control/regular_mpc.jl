@@ -60,7 +60,7 @@ function mpc(integrator)
     h_t = nominal_alts[end] / H_SCALE
     v_t = nominal_vels[end] / V_SCALE
     γ_t = nominal_γs[end]
-    α_s = deg2rad(0.0)  # Initial angle of attack (rad)
+    α_s = integrator.p.α
     β_s = integrator.p.β
     # --- 3. Define Scaled JuMP Variables ---
     model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
@@ -88,6 +88,8 @@ function mpc(integrator)
     fix(scaled_v[1], v_s; force = true)
     fix(γ[1], γ_s; force = true) 
     fix(ψ[1], ψ_s; force = true)
+    fix(α[1], α_s; force = true)
+    fix(β[1], β_s; force = true)
     # fix(q_dot[1], 0.0; force = true)
     fix(q[1], q_s; force = true)
 
@@ -274,6 +276,11 @@ function mpc(integrator)
         @constraint(model, q[j] == q[i] + q_dot[j]*time_step)
     end
 
+    @constraint(model, [j=2:n], α[j] - α[j - 1] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[1] * time_step)
+    @constraint(model, [j=2:n], α[j - 1] - α[j] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[1] * time_step)
+    @constraint(model, [j=2:n], β[j] - β[j - 1] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[2] * time_step)
+    @constraint(model, [j=2:n], β[j - 1] - β[j] <= _CONTROL_RATE_LIMIT_RAD_PER_SEC[2] * time_step)
+
     # Heating constraints
     # Objective: Reach target latitude and longitude
     @constraint(model, [j=1:n], q_dot[j] <= 269.0)  # Max heat rate (W/m^2)
@@ -302,8 +309,9 @@ function mpc(integrator)
     assert_is_solved_and_feasible(model)
 
     # --- 9. Extract and Return Unscaled Control ---
-    β_opt = value.(β)[2]
-    α_opt = value.(α)[2]
+    u_opt = _rate_limited_control_from_integrator(integrator, [value.(α)[2], value.(β)[2]])
+    α_opt = u_opt[1]
+    β_opt = u_opt[2]
 
     # Save to integrator parameters for logging
     integrator.p.optimization_states = OptimizationStates(

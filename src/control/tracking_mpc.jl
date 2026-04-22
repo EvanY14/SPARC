@@ -7,9 +7,7 @@ using DataFrames
 using Interpolations
 
 const MOI = JuMP.MOI
-const _REENTRY_JACOBIANS_PATH = joinpath(@__DIR__, "..", "reference", "reentry_jacobians.jl")
-include(_REENTRY_JACOBIANS_PATH)
-const _FT_PER_METER = 3.28084
+include(joinpath(@__DIR__, "..", "reference", "reentry_jacobians_si.jl"))
 const _OPTIMAL_TRAJECTORY_PATH = joinpath(@__DIR__, "..", "..", "optimal_trajectory.csv")
 const _OPTIMAL_CONTROL_CACHE = Ref{Any}(nothing)
 
@@ -18,12 +16,7 @@ const _OPTIMAL_CONTROL_CACHE = Ref{Any}(nothing)
 # nominal trajectory.
 const _TRACKING_STATE_WIDE_MIN = [-1.0e7, -100.0 * π, -100.0 * π, -1.0e5, -100.0 * π, -100.0 * π]
 const _TRACKING_STATE_WIDE_MAX = [1.0e7, 100.0 * π, 100.0 * π, 1.0e5, 100.0 * π, 100.0 * π]
-
-# Rate limits are bounds on the MPC correction move, not on the reference
-# controls loaded from the optimal trajectory. Keep them loose enough for the QP
-# to recover from reference/model mismatch while still discouraging chatter.
-const _TRACKING_INPUT_RATE_LIMIT_RAD_PER_SEC = deg2rad.([30.0, 20.0])
-const _TRACKING_MAX_HORIZON = 100
+const _TRACKING_USE_ENERGY_REFERENCE_ALIGNMENT = false
 
 function _blockdiag_dense(mats::Vector{<:AbstractMatrix})
 	rows = sum(size(M, 1) for M in mats)
@@ -58,7 +51,7 @@ function _load_optimal_control_cache(path::AbstractString = _OPTIMAL_TRAJECTORY_
 
 	mtime = stat(path).mtime
 	cache = _OPTIMAL_CONTROL_CACHE[]
-	if cache !== nothing && cache.path == path && cache.mtime == mtime
+	if cache !== nothing && cache.path == path && cache.mtime == mtime && hasproperty(cache, :t)
 		return cache
 	end
 
@@ -68,6 +61,10 @@ function _load_optimal_control_cache(path::AbstractString = _OPTIMAL_TRAJECTORY_
 	β_deg = _csv_column(df, (:BankAngle_deg, :Beta_deg, :Bank_deg))
 	α_rad = _csv_column(df, (:AngleOfAttack_rad, :Alpha_rad, :AOA_rad))
 	β_rad = _csv_column(df, (:BankAngle_rad, :Beta_rad, :Bank_rad))
+	h_100km = _csv_column(df, (:Altitude_100km,))
+	h_m = _csv_column(df, (:Altitude_m, :Altitude, :altitude_m, :h))
+	v_1000mps = _csv_column(df, (:Velocity_1000mps,))
+	v_mps = _csv_column(df, (:Velocity_mps, :Velocity_ms, :Velocity, :velocity_mps, :v))
 
 	if t === nothing || (α_deg === nothing && α_rad === nothing) || (β_deg === nothing && β_rad === nothing)
 		return nothing
@@ -75,16 +72,23 @@ function _load_optimal_control_cache(path::AbstractString = _OPTIMAL_TRAJECTORY_
 
 	α = α_rad === nothing ? deg2rad.(α_deg) : α_rad
 	β = β_rad === nothing ? deg2rad.(β_deg) : β_rad
+	h = h_m === nothing ? (h_100km === nothing ? nothing : h_100km .* 1.0e5) : h_m
+	v = v_mps === nothing ? (v_1000mps === nothing ? nothing : v_1000mps .* 1.0e3) : v_mps
 	order = sortperm(t)
 	t_sorted = t[order]
 	α_sorted = α[order]
 	β_sorted = β[order]
+	h_sorted = h === nothing ? nothing : h[order]
+	v_sorted = v === nothing ? nothing : v[order]
 
 	cache = (
 		path = String(path),
 		mtime = mtime,
 		t_min = first(t_sorted),
 		t_max = last(t_sorted),
+		t = t_sorted,
+		h = h_sorted,
+		v = v_sorted,
 		α = linear_interpolation(t_sorted, α_sorted, extrapolation_bc = Line()),
 		β = linear_interpolation(t_sorted, β_sorted, extrapolation_bc = Line()),
 	)
@@ -109,6 +113,168 @@ function _reference_control_matrix(
 		U_ref[:, j] .= _reference_control_at(τ, fallback)
 	end
 	return U_ref
+end
+
+function _reference_time_bounds()
+	cache = _load_optimal_control_cache()
+	if cache === nothing
+		return nothing
+	end
+	return cache.t_min, cache.t_max
+end
+
+function _specific_energy_si(
+	x::AbstractVector{<:Real};
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
+)
+	h = Float64(x[1])
+	v = Float64(x[4])
+	return Float64(μ) / (Float64(R) + h) - 0.5 * v^2
+end
+
+_specific_energy_si(h::Real, v::Real; μ::Real = 3.986004418e14, R::Real = 6378137.0) =
+	Float64(μ) / (Float64(R) + Float64(h)) - 0.5 * Float64(v)^2
+
+function _linear_interp_clamped(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}, x::Real)
+	n = length(xs)
+	if n == 0
+		return nothing
+	elseif n == 1 || x <= xs[1]
+		return Float64(ys[1])
+	elseif x >= xs[end]
+		return Float64(ys[end])
+	end
+
+	i = searchsortedlast(xs, x)
+	i = clamp(i, 1, n - 1)
+	x0 = Float64(xs[i])
+	x1 = Float64(xs[i + 1])
+	if x1 == x0
+		return Float64(ys[i])
+	end
+	λ = (Float64(x) - x0) / (x1 - x0)
+	return (1.0 - λ) * Float64(ys[i]) + λ * Float64(ys[i + 1])
+end
+
+function _reference_energy_time_samples(; μ::Real = 3.986004418e14, R::Real = 6378137.0)
+	cache = _load_optimal_control_cache()
+	if cache === nothing || cache.h === nothing || cache.v === nothing
+		return nothing
+	end
+
+	e = [_specific_energy_si(cache.h[i], cache.v[i]; μ = μ, R = R) for i in eachindex(cache.t)]
+	order = sortperm(e)
+	e_sorted = Float64.(e[order])
+	t_sorted = Float64.(cache.t[order])
+
+	e_unique = Float64[]
+	t_unique = Float64[]
+	for i in eachindex(e_sorted)
+		if isempty(e_unique) || abs(e_sorted[i] - e_unique[end]) > max(1.0, 1.0e-10 * abs(e_sorted[i]))
+			push!(e_unique, e_sorted[i])
+			push!(t_unique, t_sorted[i])
+		end
+	end
+
+	if length(e_unique) < 2
+		return nothing
+	end
+	return e_unique, t_unique
+end
+
+function _reference_time_at_energy(e::Real; μ::Real = 3.986004418e14, R::Real = 6378137.0)
+	samples = _reference_energy_time_samples(; μ = μ, R = R)
+	if samples === nothing
+		return nothing
+	end
+
+	e_samples, t_samples = samples
+	e_span = e_samples[end] - e_samples[1]
+	if !(isfinite(e_span) && e_span > 0.0)
+		return nothing
+	end
+
+	# A very large extrapolation means the vehicle is no longer on the reference
+	# energy range, so falling back to time-indexed tracking is safer.
+	margin = 0.02 * e_span
+	if Float64(e) < e_samples[1] - margin || Float64(e) > e_samples[end] + margin
+		return nothing
+	end
+	return _linear_interp_clamped(e_samples, t_samples, e)
+end
+
+function _reference_energy_at_time(t::Real; μ::Real = 3.986004418e14, R::Real = 6378137.0)
+	cache = _load_optimal_control_cache()
+	if cache === nothing || cache.h === nothing || cache.v === nothing
+		return nothing
+	end
+	h = _linear_interp_clamped(cache.t, cache.h, t)
+	v = _linear_interp_clamped(cache.t, cache.v, t)
+	if h === nothing || v === nothing
+		return nothing
+	end
+	return _specific_energy_si(h, v; μ = μ, R = R)
+end
+
+function _energy_indexed_horizon(
+	x_current::AbstractVector{<:Real},
+	t0::Real,
+	dt::Real,
+	max_horizon::Int;
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
+	shrinking::Bool = false,
+)
+	t_ref0 = _reference_time_at_energy(_specific_energy_si(x_current; μ = μ, R = R); μ = μ, R = R)
+	if t_ref0 === nothing
+		return nothing
+	end
+
+	if shrinking
+		model_times, prediction_times, physical_step_sizes =
+			_shrinking_horizon_times(t_ref0, dt, max_horizon)
+	else
+		N = max(max_horizon, 1)
+		model_times = Float64(t_ref0) .+ (0:(N - 1)) .* Float64(dt)
+		prediction_times = Float64(t_ref0) .+ (1:N) .* Float64(dt)
+		physical_step_sizes = fill(Float64(dt), N)
+	end
+
+	N = length(prediction_times)
+	energy_step_sizes = zeros(N)
+	for j in 1:N
+		e0 = _reference_energy_at_time(model_times[j]; μ = μ, R = R)
+		e1 = _reference_energy_at_time(prediction_times[j]; μ = μ, R = R)
+		if e0 === nothing || e1 === nothing
+			return nothing
+		end
+		energy_step_sizes[j] = e1 - e0
+	end
+
+	if !all(isfinite, energy_step_sizes) || any(energy_step_sizes .<= 0.0)
+		return nothing
+	end
+
+	return (
+		reference_time = Float64(t_ref0),
+		model_times = Float64.(model_times),
+		prediction_times = Float64.(prediction_times),
+		energy_step_sizes = energy_step_sizes,
+		physical_step_sizes = Float64.(physical_step_sizes),
+	)
+end
+
+function _normalized_stage_weights(step_sizes::AbstractVector{<:Real})
+	w = Float64.(step_sizes)
+	if isempty(w) || !all(isfinite, w) || any(w .<= 0.0)
+		return ones(length(w))
+	end
+	mean_w = sum(w) / length(w)
+	if !(isfinite(mean_w) && mean_w > 0.0)
+		return ones(length(w))
+	end
+	return w ./ mean_w
 end
 
 function _transition_product(Achi_seq::Vector{Matrix{Float64}}, start_idx::Int, end_idx::Int)
@@ -150,27 +316,22 @@ end
 
 function _zoh_discretize(Ac::Matrix{Float64}, Bc::Matrix{Float64}, dt::Real)
 	n, m = size(Bc)
-	M = exp([Ac Bc; zeros(m, n + m)] * dt)
-	return M[1:n, 1:n], M[1:n, n + 1:n + m]
-end
-
-function _finite_difference_jacobian(f::Function, z::Vector{Float64})
-	f0 = f(z)
-	J = zeros(length(f0), length(z))
-	for i in eachindex(z)
-		step = sqrt(eps(Float64)) * max(abs(z[i]), 1.0)
-		zp = copy(z)
-		zm = copy(z)
-		zp[i] += step
-		zm[i] -= step
-		J[:, i] .= (f(zp) .- f(zm)) ./ (2.0 * step)
-	end
-	return J
+	# Replace pure LTI matrix exponential with Heun's 2nd-order RK discretization
+	# to match the Model Predictive Guidance (MPG) implementation.
+	I_n = Matrix{Float64}(I, n, n)
+	Ad = I_n + Ac * dt + 0.5 * (Ac^2) * dt^2
+	Bd = Bc * dt + 0.5 * Ac * Bc * dt^2
+	return Ad, Bd
 end
 
 function _nominal_reentry_dynamics_si(
 	x::AbstractVector{<:Real},
 	u::AbstractVector{<:Real},
+	;
+	mass::Real = VEHICLE_MASS,
+	area::Real = VEHICLE_REFERENCE_AREA,
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
 )
 	h = Float64(x[1])
 	θ = Float64(x[3])
@@ -180,10 +341,10 @@ function _nominal_reentry_dynamics_si(
 	α = Float64(u[1])
 	β = Float64(u[2])
 
-	m = 3257.0
-	S = 15.904
-	μ = 3.986004418e14
-	R = 6378137.0
+	m = Float64(mass)
+	S = Float64(area)
+	μ_si = Float64(μ)
+	R_si = Float64(R)
 	a0 = -0.20704
 	a1 = 0.029244
 	b0 = 0.07854
@@ -194,8 +355,8 @@ function _nominal_reentry_dynamics_si(
 	α_deg = rad2deg(α)
 	cL = a0 + a1 * α_deg
 	cD = b0 + b1 * α_deg + b2 * α_deg^2
-	r = R + h
-	g = μ / r^2
+	r = R_si + h
+	g = μ_si / r^2
 	D = 0.5 * cD * S * ρ * v^2
 	L = 0.5 * cL * S * ρ * v^2
 
@@ -213,29 +374,42 @@ function _nominal_reentry_step_si(
 	x::AbstractVector{<:Real},
 	u::AbstractVector{<:Real},
 	dt::Real,
+	;
+	mass::Real = VEHICLE_MASS,
+	area::Real = VEHICLE_REFERENCE_AREA,
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
 )
-	k1 = _nominal_reentry_dynamics_si(x, u)
-	k2 = _nominal_reentry_dynamics_si(x .+ 0.5 * dt .* k1, u)
-	k3 = _nominal_reentry_dynamics_si(x .+ 0.5 * dt .* k2, u)
-	k4 = _nominal_reentry_dynamics_si(x .+ dt .* k3, u)
+	k1 = _nominal_reentry_dynamics_si(x, u; mass = mass, area = area, μ = μ, R = R)
+	k2 = _nominal_reentry_dynamics_si(x .+ 0.5 * dt .* k1, u; mass = mass, area = area, μ = μ, R = R)
+	k3 = _nominal_reentry_dynamics_si(x .+ 0.5 * dt .* k2, u; mass = mass, area = area, μ = μ, R = R)
+	k4 = _nominal_reentry_dynamics_si(x .+ dt .* k3, u; mass = mass, area = area, μ = μ, R = R)
 	return Float64.(x) .+ (dt / 6.0) .* (k1 .+ 2.0 .* k2 .+ 2.0 .* k3 .+ k4)
 end
 
 function _generated_continuous_linearization_si(
 	x_ref::AbstractVector{<:Real},
 	u_ref::AbstractVector{<:Real},
+	;
+	mass::Real = VEHICLE_MASS,
+	area::Real = VEHICLE_REFERENCE_AREA,
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
 )
-	z_ref = Float64.([x_ref; u_ref])
-	J = _finite_difference_jacobian(z -> _nominal_reentry_dynamics_si(z[1:6], z[7:8]), z_ref)
-	return J[:, 1:6], J[:, 7:8]
+	return _analytical_continuous_linearization_si(x_ref, u_ref; mass = mass, area = area, μ = μ, R = R)
 end
 
 function _generated_discrete_linearization_si(
 	x_ref::AbstractVector{<:Real},
 	u_ref::AbstractVector{<:Real},
 	dt::Real,
+	;
+	mass::Real = VEHICLE_MASS,
+	area::Real = VEHICLE_REFERENCE_AREA,
+	μ::Real = 3.986004418e14,
+	R::Real = 6378137.0,
 )
-	Ac, Bc = _generated_continuous_linearization_si(x_ref, u_ref)
+	Ac, Bc = _generated_continuous_linearization_si(x_ref, u_ref; mass = mass, area = area, μ = μ, R = R)
 	return _zoh_discretize(Ac, Bc, dt)
 end
 
@@ -464,9 +638,13 @@ function _solve_tracking_sparse_qp(
 	Xmin::Matrix{Float64},
 	Xmax::Matrix{Float64},
 	warm_start::Vector{Float64} = Float64[],
+	stage_weights::Vector{Float64} = ones(size(X_ref, 2)),
 )
 	nx, N = size(X_ref)
 	nu = size(U_ref, 1)
+	if length(stage_weights) != N
+		stage_weights = ones(N)
+	end
 	model = Model(
 		optimizer_with_attributes(
 			OSQP.Optimizer,
@@ -513,8 +691,8 @@ function _solve_tracking_sparse_qp(
 	@objective(
 		model,
 		Min,
-		sum(Qs[i, i] * (G[i, i] * e[i, j])^2 for i in 1:nx, j in 1:N) +
-		sum(Rv[i, i] * v[i, j]^2 for i in 1:nu, j in 1:N) +
+		sum(stage_weights[j] * Qs[i, i] * (G[i, i] * e[i, j])^2 for i in 1:nx, j in 1:N) +
+		sum(stage_weights[j] * Rv[i, i] * v[i, j]^2 for i in 1:nu, j in 1:N) +
 		sum(RΔ[i, i] * Δv[i, j]^2 for i in 1:nu, j in 1:N) +
 		sum(P[i, k] * e[i, N] * e[k, N] for i in 1:nx, k in 1:nx),
 	)
@@ -523,6 +701,11 @@ function _solve_tracking_sparse_qp(
 	term = termination_status(model)
 	if !(term in (MOI.OPTIMAL, MOI.LOCALLY_SOLVED, MOI.ALMOST_OPTIMAL))
 		@warn "tracking MPC OSQP solve returned status $term"
+		ΔU_star = zeros(N * nu)
+		V_star = repeat(v_prev, 1, N)
+		E_star = zeros(nx, N)
+		u0_star = U_ref[:, 1] + v_prev
+		return ΔU_star, V_star, E_star, u0_star
 	end
 
 	ΔU_star = vec(value.(Δv))
@@ -533,7 +716,7 @@ function _solve_tracking_sparse_qp(
 end
 
 function trackingmpc(integrator)
-	N = max(min(integrator.p.mpc_params.n_horizon, _TRACKING_MAX_HORIZON), 1)
+	N = max(integrator.p.mpc_params.n_horizon, 1)
 	dt = integrator.p.mpc_params.time_step
 	t0 = integrator.t
 
@@ -552,9 +735,25 @@ function trackingmpc(integrator)
 		nominal[6](τ),
 	]
 
-	model_times = t0 .+ (0:(N - 1)) .* dt
-	prediction_times = t0 .+ (1:N) .* dt
-	x_ref_now = xref_at(t0)
+	energy_horizon = _TRACKING_USE_ENERGY_REFERENCE_ALIGNMENT ?
+		_energy_indexed_horizon(
+			xk,
+			t0,
+			dt,
+			N;
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+			shrinking = false,
+		) :
+		nothing
+	reference_time_now = energy_horizon === nothing ? Float64(t0) : energy_horizon.reference_time
+	model_times, prediction_times, physical_step_sizes = if energy_horizon === nothing
+		_shrinking_horizon_times(t0, dt, N)
+	else
+		energy_horizon.model_times, energy_horizon.prediction_times, energy_horizon.physical_step_sizes
+	end
+	N = length(prediction_times)
+	x_ref_now = xref_at(reference_time_now)
 	X_ref = zeros(nx, N)
 	X_model = zeros(nx, N)
 	for j in 1:N
@@ -567,7 +766,7 @@ function trackingmpc(integrator)
 	prev_u = Vector{Float64}(integrator.p.mpc_params.prev_x[nx + 1:nx + nu])
 	# Use the reference at the *previous* step as the baseline so that
 	# v_{k-1} = u_{k-1} - u_ref_{k-1}, not u_ref_{k}.
-	uref_prev = _reference_control_at(t0 - dt, current_control_fallback)
+	uref_prev = _reference_control_at(model_times[1] - physical_step_sizes[1], current_control_fallback)
 	if !all(isfinite, prev_u) || norm(prev_u) == 0.0
 		prev_u .= uref_prev
 	end
@@ -582,8 +781,25 @@ function trackingmpc(integrator)
 	G_seq = [Matrix{Float64}(G) for _ in 1:N]
 
 	for j in 1:N
-		A_seq[j], B_seq[j] = _generated_discrete_linearization_si(X_model[:, j], U_ref[:, j], dt)
-		d_seq[j] = _nominal_reentry_step_si(X_model[:, j], U_ref[:, j], dt) - X_ref[:, j]
+		Δt = physical_step_sizes[j]
+		A_seq[j], B_seq[j] = _generated_discrete_linearization_si(
+			X_model[:, j],
+			U_ref[:, j],
+			Δt;
+			mass = integrator.p.mass,
+			area = integrator.p.area,
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+		)
+		d_seq[j] = _nominal_reentry_step_si(
+			X_model[:, j],
+			U_ref[:, j],
+			Δt;
+			mass = integrator.p.mass,
+			area = integrator.p.area,
+			μ = integrator.p.μ,
+			R = integrator.p.R,
+		) - X_ref[:, j]
 	end
 
 	# Qs weights the normalised sliding variable s = G*e.  Because G scales altitude
@@ -594,7 +810,8 @@ function trackingmpc(integrator)
 	#   γ/θ: 0.01 rad → s = 0.01
 	# Previous Qs[h]=10, Qs[v]=10 gave effective weights 1e9× smaller than angles;
 	# the fix is to raise them proportionally.
-	Qs = Diagonal([1000.0, 3000.0, 3000.0, 1000.0, 500.0, 1000.0])
+	# Emulate output-tracking: heavily weight Altitude, Lat, Lon. Relax v, γ, ψ.
+	Qs = Diagonal([3000.0, 3000.0, 5000.0, 100.0, 10.0, 100.0])
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	# Keep controls free enough to reject model mismatch, but avoid using bank as
 	# a nearly-free crossrange actuator when its predicted benefit is ambiguous.
@@ -602,21 +819,19 @@ function trackingmpc(integrator)
 	RΔ = Diagonal([0.5, 0.5])
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([1000.0, 150000.0, 150000.0, 3000.0, 1000.0, 3000.0])
+	P_normalized = Diagonal([3000.0, 3000.0, 3000.0, 100.0, 10.0, 100.0])
 	P = Matrix{Float64}(G' * P_normalized * G)
 
-	αmin = deg2rad(-90.0)
-	αmax = deg2rad(90.0)
-	βmin = deg2rad(-89.0)
-	βmax = deg2rad(89.0)
+	αmin, βmin = _CONTROL_MIN_RAD
+	αmax, βmax = _CONTROL_MAX_RAD
 	# Per-step rate bounds centred on the reference motion: Δv_j ∈ [−Δu_max − δu_ref_j,
 	# Δu_max − δu_ref_j].  This ensures that merely following the reference does not
 	# violate the rate constraint.  uref_prev was computed above for the v_prev fix.
-	Δumax_vec = _TRACKING_INPUT_RATE_LIMIT_RAD_PER_SEC .* dt
 	U_ref_ext = hcat(uref_prev, U_ref)   # col 1 = previous ref; cols 2..N+1 = horizon refs
 	ΔVmin = zeros(nu, N)
 	ΔVmax = zeros(nu, N)
 	for j in 1:N
+		Δumax_vec = _CONTROL_RATE_LIMIT_RAD_PER_SEC .* physical_step_sizes[j]
 		δu_ref_j = U_ref_ext[:, j + 1] - U_ref_ext[:, j]
 		ΔVmin[:, j] = -Δumax_vec - δu_ref_j
 		ΔVmax[:, j] =  Δumax_vec - δu_ref_j

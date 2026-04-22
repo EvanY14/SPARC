@@ -12,7 +12,9 @@ module SimulatorModel
     export atmospheric_density
     export altitude_termination_condition, atmospheric_density_callback, control_callback
     export saving_callback, saved_values
-    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, openloopcontrol, openloop
+    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, sm_mpg, openloopcontrol, openloop
+    export VehicleDefinition, VEHICLE, VEHICLE_MASS, VEHICLE_REFERENCE_AREA
+    include("vehicle.jl")
     include("types.jl")
     @reexport using .ModelTypes
     include("earth_atmosphere_polyfit.jl")
@@ -22,11 +24,13 @@ module SimulatorModel
     include("atmosphere_models.jl")
 
     # Control strategies
+    include("../control/control_limits.jl")
     include("../control/regular_mpc.jl")
     include("../control/ssi_mpc.jl")
     include("../control/tracking_mpc.jl")
     include("../control/tracking_mpc_shrinking_horizon.jl")
     include("../control/model_predictive_guidance.jl")
+    include("../control/sm_mpg.jl")
     include("../control/open_loop_control.jl")
 
     # Integration callbacks
