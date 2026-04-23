@@ -20,7 +20,9 @@ using CSV
 using DataFrames
 using Interpolations
 include("reference/trajectory_initialization.jl")
-BROWSER_PLOTS_AVAILABLE ? plotly() : gr()
+# BROWSER_PLOTS_AVAILABLE ? plotly() : gr()
+plotly()
+const SM_MPG_LINESTYLE = :dashdot
 
 optimal_control = CSV.read("optimal_trajectory.csv", DataFrame)
 init = reference_initial_conditions(optimal_control)
@@ -247,54 +249,74 @@ end
 
 shrinking_sol, shrinking_params, shrinking_saved_t, shrinking_saved_data = run_controller(SimulatorModel.trackingmpc)
 mpg_sol, mpg_params, mpg_saved_t, mpg_saved_data = run_controller(SimulatorModel.mpg)
+integral_mpg_sol, integral_mpg_params, integral_mpg_saved_t, integral_mpg_saved_data = run_controller(SimulatorModel.mpg_integral)
 open_loop_sol, open_loop_params, open_loop_saved_t, open_loop_saved_data = run_controller(open_loop_control)
 sm_mpg_sol, sm_mpg_params, sm_mpg_saved_t, sm_mpg_saved_data = run_controller(SimulatorModel.sm_mpg)
+q4_sm_mpg_sol, q4_sm_mpg_params, q4_sm_mpg_saved_t, q4_sm_mpg_saved_data = run_controller(SimulatorModel.sm_mpg_q4)
 
 shrinking = build_simulation_output("Shrinking horizon MPC", shrinking_sol, shrinking_saved_t, shrinking_saved_data)
 mpg_result = build_simulation_output("MPg", mpg_sol, mpg_saved_t, mpg_saved_data)
+integral_mpg_result = build_simulation_output("Integral MPg", integral_mpg_sol, integral_mpg_saved_t, integral_mpg_saved_data)
 open_loop_result = build_simulation_output("Open Loop", open_loop_sol, open_loop_saved_t, open_loop_saved_data)
 sm_mpg_result = build_simulation_output("SM-MPG", sm_mpg_sol, sm_mpg_saved_t, sm_mpg_saved_data)
+q4_sm_mpg_result = build_simulation_output("Q4 SM-MPG", q4_sm_mpg_sol, q4_sm_mpg_saved_t, q4_sm_mpg_saved_data)
 
 CSV.write("simulation_output_shrinking_mpc.csv", shrinking.df)
 CSV.write("simulation_output_mpg.csv", mpg_result.df)
+CSV.write("simulation_output_integral_mpg.csv", integral_mpg_result.df)
 CSV.write("simulation_output_open_loop.csv", open_loop_result.df)
 CSV.write("simulation_output_sm_mpg.csv", sm_mpg_result.df)
-CSV.write("simulation_output.csv", vcat(shrinking.df, mpg_result.df, open_loop_result.df, sm_mpg_result.df))
+CSV.write("simulation_output_q4_sm_mpg.csv", q4_sm_mpg_result.df)
+CSV.write("simulation_output.csv", vcat(shrinking.df, mpg_result.df, integral_mpg_result.df, open_loop_result.df, sm_mpg_result.df, q4_sm_mpg_result.df))
 
 edl_altitude_plot = plot(shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, xlabel="Time (s)", ylabel="Altitude (km)", title="EDL Simulation: Altitude vs Time", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_altitude_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label="MPg", linewidth=2)
+plot!(edl_altitude_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_altitudes ./ 1e3, label="Integral MPg", linewidth=2)
 plot!(edl_altitude_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label="Open Loop", linewidth=2)
 plot!(edl_altitude_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label="SM-MPG", linewidth=2)
+plot!(edl_altitude_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_altitudes ./ 1e3, label="Q4 SM-MPG", linewidth=2)
 display(edl_altitude_plot)
 edl_velocity_plot = plot(shrinking.sol.t, shrinking.sim_velocities ./ 1e3, xlabel="Time (s)", ylabel="Velocity (km/s)", title="EDL Simulation: Velocity vs Time", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_velocity_plot, mpg_result.sol.t, mpg_result.sim_velocities ./ 1e3, label="MPg", linewidth=2)
+plot!(edl_velocity_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_velocities ./ 1e3, label="Integral MPg", linewidth=2)
 plot!(edl_velocity_plot, open_loop_result.sol.t, open_loop_result.sim_velocities ./ 1e3, label="Open Loop", linewidth=2)
 plot!(edl_velocity_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_velocities ./ 1e3, label="SM-MPG", linewidth=2)
+plot!(edl_velocity_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_velocities ./ 1e3, label="Q4 SM-MPG", linewidth=2)
 display(edl_velocity_plot)
 edl_ground_track_plot = plot(shrinking.sim_x_km, shrinking.sim_y_km, xlabel="X (km)", ylabel="Y (km)", title="EDL Simulation: Cartesian Ground Track", label="Shrinking horizon MPC", linewidth=2)
 plot!(edl_ground_track_plot, mpg_result.sim_x_km, mpg_result.sim_y_km, label="MPg", linewidth=2)
+plot!(edl_ground_track_plot, integral_mpg_result.sim_x_km, integral_mpg_result.sim_y_km, label="Integral MPg", linewidth=2)
 plot!(edl_ground_track_plot, open_loop_result.sim_x_km, open_loop_result.sim_y_km, label="Open Loop", linewidth=2)
 plot!(edl_ground_track_plot, sm_mpg_result.sim_x_km, sm_mpg_result.sim_y_km, label="SM-MPG", linewidth=2)
+plot!(edl_ground_track_plot, q4_sm_mpg_result.sim_x_km, q4_sm_mpg_result.sim_y_km, label="Q4 SM-MPG", linewidth=2)
 display(edl_ground_track_plot)
 
 density_plot = plot(shrinking.saved_t[2:end], shrinking.densities[2:end], xlabel="Time (s)", ylabel="Atmospheric Density (kg/m³)", title="Atmospheric Density Profile", label="Shrinking horizon MPC", yscale=:log10, linewidth=2)
 plot!(density_plot, mpg_result.saved_t[2:end], mpg_result.densities[2:end], label="MPg", linewidth=2)
+plot!(density_plot, integral_mpg_result.saved_t[2:end], integral_mpg_result.densities[2:end], label="Integral MPg", linewidth=2)
 plot!(density_plot, open_loop_result.saved_t[2:end], open_loop_result.densities[2:end], label="Open Loop", linewidth=2)
 plot!(density_plot, sm_mpg_result.saved_t[2:end], sm_mpg_result.densities[2:end], label="SM-MPG", linewidth=2)
+plot!(density_plot, q4_sm_mpg_result.saved_t[2:end], q4_sm_mpg_result.densities[2:end], label="Q4 SM-MPG", linewidth=2)
 display(density_plot)
 bank_profile_plot = plot(shrinking.saved_t, shrinking.betas .* (180 / π), xlabel="Time (s)", ylabel="Bank Angle (deg)", title="Bank Angle Profile", label="Shrinking horizon MPC", linewidth=2)
 plot!(bank_profile_plot, mpg_result.saved_t, mpg_result.betas .* (180 / π), label="MPg", linewidth=2)
+plot!(bank_profile_plot, integral_mpg_result.saved_t, integral_mpg_result.betas .* (180 / π), label="Integral MPg", linewidth=2)
 plot!(bank_profile_plot, open_loop_result.saved_t, open_loop_result.betas .* (180 / π), label="Open Loop", linewidth=2)
 plot!(bank_profile_plot, sm_mpg_result.saved_t, sm_mpg_result.betas .* (180 / π), label="SM-MPG", linewidth=2)
+plot!(bank_profile_plot, q4_sm_mpg_result.saved_t, q4_sm_mpg_result.betas .* (180 / π), label="Q4 SM-MPG", linewidth=2)
 display(bank_profile_plot)
 heat_rate_plot = plot(shrinking.saved_t, shrinking.heat_rates, xlabel="Time (s)", ylabel="Convective Heat Rate (W/m²)", title="Convective Heat Rate Profile", label="Shrinking horizon MPC", linewidth=2)
 plot!(heat_rate_plot, mpg_result.saved_t, mpg_result.heat_rates, label="MPg", linewidth=2)
+plot!(heat_rate_plot, integral_mpg_result.saved_t, integral_mpg_result.heat_rates, label="Integral MPg", linewidth=2)
 plot!(heat_rate_plot, open_loop_result.saved_t, open_loop_result.heat_rates, label="Open Loop", linewidth=2)
 plot!(heat_rate_plot, sm_mpg_result.saved_t, sm_mpg_result.heat_rates, label="SM-MPG", linewidth=2)
+plot!(heat_rate_plot, q4_sm_mpg_result.saved_t, q4_sm_mpg_result.heat_rates, label="Q4 SM-MPG", linewidth=2)
 heat_load_plot = plot(shrinking.sol.t, shrinking.sim_heat_loads, xlabel="Time (s)", ylabel="Convective Heat Load (J/m²)", title="Convective Heat Load Profile from State", label="Shrinking horizon MPC", linewidth=2)
 plot!(heat_load_plot, mpg_result.sol.t, mpg_result.sim_heat_loads, label="MPg", linewidth=2)
+plot!(heat_load_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_heat_loads, label="Integral MPg", linewidth=2)
 plot!(heat_load_plot, open_loop_result.sol.t, open_loop_result.sim_heat_loads, label="Open Loop", linewidth=2)
 plot!(heat_load_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_heat_loads, label="SM-MPG", linewidth=2)
+plot!(heat_load_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_heat_loads, label="Q4 SM-MPG", linewidth=2)
 display(plot(heat_rate_plot, heat_load_plot, layout=(2,1)))
 
 # Compare the tracked simulations and applied controls with the optimal reference
@@ -309,8 +331,10 @@ mpc_altitude_plot = plot(
 )
 plot!(mpc_altitude_plot, shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_altitude_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label = "MPg", linewidth = 2)
+plot!(mpc_altitude_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_altitudes ./ 1e3, label = "Integral MPg", linewidth = 2)
 plot!(mpc_altitude_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label = "Open Loop", linewidth = 2)
 plot!(mpc_altitude_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label = "SM-MPG", linewidth = 2)
+plot!(mpc_altitude_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_altitudes ./ 1e3, label = "Q4 SM-MPG", linewidth = 2)
 
 mpc_velocity_plot = plot(
     optimal_control.Time_s,
@@ -323,8 +347,10 @@ mpc_velocity_plot = plot(
 )
 plot!(mpc_velocity_plot, shrinking.sol.t, shrinking.sim_velocities, label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_velocity_plot, mpg_result.sol.t, mpg_result.sim_velocities, label = "MPg", linewidth = 2)
+plot!(mpc_velocity_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_velocities, label = "Integral MPg", linewidth = 2)
 plot!(mpc_velocity_plot, open_loop_result.sol.t, open_loop_result.sim_velocities, label = "Open Loop", linewidth = 2)
 plot!(mpc_velocity_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_velocities, label = "SM-MPG", linewidth = 2)
+plot!(mpc_velocity_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_velocities, label = "Q4 SM-MPG", linewidth = 2)
 
 mpc_fpa_plot = plot(
     optimal_control.Time_s,
@@ -337,8 +363,10 @@ mpc_fpa_plot = plot(
 )
 plot!(mpc_fpa_plot, shrinking.sol.t, rad2deg.(shrinking.sim_flight_paths), label = "Shrinking horizon MPC", linewidth = 2)
 plot!(mpc_fpa_plot, mpg_result.sol.t, rad2deg.(mpg_result.sim_flight_paths), label = "MPg", linewidth = 2)
+plot!(mpc_fpa_plot, integral_mpg_result.sol.t, rad2deg.(integral_mpg_result.sim_flight_paths), label = "Integral MPg", linewidth = 2)
 plot!(mpc_fpa_plot, open_loop_result.sol.t, rad2deg.(open_loop_result.sim_flight_paths), label = "Open Loop", linewidth = 2)
 plot!(mpc_fpa_plot, sm_mpg_result.sol.t, rad2deg.(sm_mpg_result.sim_flight_paths), label = "SM-MPG", linewidth = 2)
+plot!(mpc_fpa_plot, q4_sm_mpg_result.sol.t, rad2deg.(q4_sm_mpg_result.sim_flight_paths), label = "Q4 SM-MPG", linewidth = 2)
 display(plot(mpc_altitude_plot, mpc_velocity_plot, mpc_fpa_plot, layout = (3, 1), size = (900, 900)))
 
 mpc_ground_track_plot = plot(
@@ -366,6 +394,13 @@ plot!(
 )
 plot!(
     mpc_ground_track_plot,
+    integral_mpg_result.sim_x_km,
+    integral_mpg_result.sim_y_km,
+    label = "Integral MPg",
+    linewidth = 2,
+)
+plot!(
+    mpc_ground_track_plot,
     open_loop_result.sim_x_km,
     open_loop_result.sim_y_km,
     label = "Open Loop",
@@ -376,6 +411,13 @@ plot!(
     sm_mpg_result.sim_x_km,
     sm_mpg_result.sim_y_km,
     label = "SM-MPG",
+    linewidth = 2,
+)
+plot!(
+    mpc_ground_track_plot,
+    q4_sm_mpg_result.sim_x_km,
+    q4_sm_mpg_result.sim_y_km,
+    label = "Q4 SM-MPG",
     linewidth = 2,
 )
 display(mpc_ground_track_plot)
@@ -397,12 +439,18 @@ plot!(cartesian_position_plot, shrinking.sol.t, shrinking.sim_z_km, label = "MPC
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_x_km, label = "MPg X", linestyle = :dot, linewidth = 2)
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_y_km, label = "MPg Y", linestyle = :dot, linewidth = 2)
 plot!(cartesian_position_plot, mpg_result.sol.t, mpg_result.sim_z_km, label = "MPg Z", linestyle = :dot, linewidth = 2)
+plot!(cartesian_position_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_x_km, label = "Integral MPg X", linewidth = 2)
+plot!(cartesian_position_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_y_km, label = "Integral MPg Y", linewidth = 2)
+plot!(cartesian_position_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_z_km, label = "Integral MPg Z", linewidth = 2)
 plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_x_km, label = "Open Loop X", linestyle = :dashdot, linewidth = 2)
 plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_y_km, label = "Open Loop Y", linestyle = :dashdot, linewidth = 2)
 plot!(cartesian_position_plot, open_loop_result.sol.t, open_loop_result.sim_z_km, label = "Open Loop Z", linestyle = :dashdot, linewidth = 2)
-plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_x_km, label = "SM-MPG X", linestyle = :dashdotdot, linewidth = 2)
-plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_y_km, label = "SM-MPG Y", linestyle = :dashdotdot, linewidth = 2)
-plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_z_km, label = "SM-MPG Z", linestyle = :dashdotdot, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_x_km, label = "SM-MPG X", linestyle = SM_MPG_LINESTYLE, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_y_km, label = "SM-MPG Y", linestyle = SM_MPG_LINESTYLE, linewidth = 2)
+plot!(cartesian_position_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_z_km, label = "SM-MPG Z", linestyle = SM_MPG_LINESTYLE, linewidth = 2)
+plot!(cartesian_position_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_x_km, label = "Q4 SM-MPG X", linestyle = :solid, linewidth = 2)
+plot!(cartesian_position_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_y_km, label = "Q4 SM-MPG Y", linestyle = :solid, linewidth = 2)
+plot!(cartesian_position_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_z_km, label = "Q4 SM-MPG Z", linestyle = :solid, linewidth = 2)
 display(cartesian_position_plot)
 
 position_error_plot = plot(
@@ -415,11 +463,13 @@ position_error_plot = plot(
     linewidth = 2,
 )
 plot!(position_error_plot, mpg_result.sol.t, mpg_result.position_error_norm_km, label = "MPg", linewidth = 2)
+plot!(position_error_plot, integral_mpg_result.sol.t, integral_mpg_result.position_error_norm_km, label = "Integral MPg", linewidth = 2)
 plot!(position_error_plot, open_loop_result.sol.t, open_loop_result.position_error_norm_km, label = "Open Loop", linewidth = 2)
 plot!(position_error_plot, sm_mpg_result.sol.t, sm_mpg_result.position_error_norm_km, label = "SM-MPG", linewidth = 2)
+plot!(position_error_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.position_error_norm_km, label = "Q4 SM-MPG", linewidth = 2)
 display(position_error_plot)
 
-if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
+if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t) || !isempty(integral_mpg_result.saved_t) || !isempty(q4_sm_mpg_result.saved_t)
     mpc_alpha_plot = plot(
         optimal_control.Time_s,
         optimal_control.AngleOfAttack_deg,
@@ -431,8 +481,10 @@ if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
     )
     plot!(mpc_alpha_plot, shrinking.saved_t, rad2deg.(shrinking.alphas), label = "Shrinking horizon MPC", linewidth = 2)
     plot!(mpc_alpha_plot, mpg_result.saved_t, rad2deg.(mpg_result.alphas), label = "MPg", linewidth = 2)
+    plot!(mpc_alpha_plot, integral_mpg_result.saved_t, rad2deg.(integral_mpg_result.alphas), label = "Integral MPg", linewidth = 2)
     plot!(mpc_alpha_plot, open_loop_result.saved_t, rad2deg.(open_loop_result.alphas), label = "Open Loop", linewidth = 2)
     plot!(mpc_alpha_plot, sm_mpg_result.saved_t, rad2deg.(sm_mpg_result.alphas), label = "SM-MPG", linewidth = 2)
+    plot!(mpc_alpha_plot, q4_sm_mpg_result.saved_t, rad2deg.(q4_sm_mpg_result.alphas), label = "Q4 SM-MPG", linewidth = 2)
 
     mpc_bank_plot = plot(
         optimal_control.Time_s,
@@ -445,14 +497,18 @@ if !isempty(shrinking.saved_t) || !isempty(mpg_result.saved_t)
     )
     plot!(mpc_bank_plot, shrinking.saved_t, rad2deg.(shrinking.betas), label = "Shrinking horizon MPC", linewidth = 2)
     plot!(mpc_bank_plot, mpg_result.saved_t, rad2deg.(mpg_result.betas), label = "MPg", linewidth = 2)
+    plot!(mpc_bank_plot, integral_mpg_result.saved_t, rad2deg.(integral_mpg_result.betas), label = "Integral MPg", linewidth = 2)
     plot!(mpc_bank_plot, open_loop_result.saved_t, rad2deg.(open_loop_result.betas), label = "Open Loop", linewidth = 2)
     plot!(mpc_bank_plot, sm_mpg_result.saved_t, rad2deg.(sm_mpg_result.betas), label = "SM-MPG", linewidth = 2)
+    plot!(mpc_bank_plot, q4_sm_mpg_result.saved_t, rad2deg.(q4_sm_mpg_result.betas), label = "Q4 SM-MPG", linewidth = 2)
     display(plot(mpc_alpha_plot, mpc_bank_plot, layout = (2, 1), size = (900, 650)))
 end
 
-opt_states = mpg_params.optimization_states
-if !isempty(opt_states.h_c)
-    mpc_prediction_times = mpg_result.sol.t[end] .+ (1:length(opt_states.h_c)) .* mpg_params.mpc_params.time_step
+mpg_opt_states = mpg_params.optimization_states
+integral_mpg_opt_states = integral_mpg_params.optimization_states
+sm_mpg_opt_states = sm_mpg_params.optimization_states
+q4_sm_mpg_opt_states = q4_sm_mpg_params.optimization_states
+if !isempty(mpg_opt_states.h_c) || !isempty(integral_mpg_opt_states.h_c) || !isempty(sm_mpg_opt_states.h_c) || !isempty(q4_sm_mpg_opt_states.h_c)
     latest_prediction_plot = plot(
         optimal_control.Time_s,
         optimal_control.Altitude_100km .* 100.0,
@@ -464,16 +520,54 @@ if !isempty(opt_states.h_c)
     )
     plot!(latest_prediction_plot, shrinking.sol.t, shrinking.sim_altitudes ./ 1e3, label = "Shrinking horizon MPC", linewidth = 2)
     plot!(latest_prediction_plot, mpg_result.sol.t, mpg_result.sim_altitudes ./ 1e3, label = "MPg", linewidth = 2)
+    plot!(latest_prediction_plot, integral_mpg_result.sol.t, integral_mpg_result.sim_altitudes ./ 1e3, label = "Integral MPg", linewidth = 2)
     plot!(latest_prediction_plot, open_loop_result.sol.t, open_loop_result.sim_altitudes ./ 1e3, label = "Open Loop", linewidth = 2)
     plot!(latest_prediction_plot, sm_mpg_result.sol.t, sm_mpg_result.sim_altitudes ./ 1e3, label = "SM-MPG", linewidth = 2)
-    plot!(
-        latest_prediction_plot,
-        mpc_prediction_times,
-        opt_states.h_c ./ 1e3,
-        label = "Latest MPg prediction",
-        linestyle = :dot,
-        linewidth = 2,
-    )
+    plot!(latest_prediction_plot, q4_sm_mpg_result.sol.t, q4_sm_mpg_result.sim_altitudes ./ 1e3, label = "Q4 SM-MPG", linewidth = 2)
+    if !isempty(mpg_opt_states.h_c)
+        mpc_prediction_times = mpg_result.sol.t[end] .+ (1:length(mpg_opt_states.h_c)) .* mpg_params.mpc_params.time_step
+        plot!(
+            latest_prediction_plot,
+            mpc_prediction_times,
+            mpg_opt_states.h_c ./ 1e3,
+            label = "Latest MPg prediction",
+            linestyle = :dot,
+            linewidth = 2,
+        )
+    end
+    if !isempty(integral_mpg_opt_states.h_c)
+        integral_mpg_prediction_times = integral_mpg_result.sol.t[end] .+ (1:length(integral_mpg_opt_states.h_c)) .* integral_mpg_params.mpc_params.time_step
+        plot!(
+            latest_prediction_plot,
+            integral_mpg_prediction_times,
+            integral_mpg_opt_states.h_c ./ 1e3,
+            label = "Latest Integral MPg prediction",
+            linestyle = :dash,
+            linewidth = 2,
+        )
+    end
+    if !isempty(sm_mpg_opt_states.h_c)
+        sm_mpg_prediction_times = sm_mpg_result.sol.t[end] .+ (1:length(sm_mpg_opt_states.h_c)) .* sm_mpg_params.mpc_params.time_step
+        plot!(
+            latest_prediction_plot,
+            sm_mpg_prediction_times,
+            sm_mpg_opt_states.h_c ./ 1e3,
+            label = "Latest SM-MPG prediction",
+            linestyle = SM_MPG_LINESTYLE,
+            linewidth = 2,
+        )
+    end
+    if !isempty(q4_sm_mpg_opt_states.h_c)
+        q4_sm_mpg_prediction_times = q4_sm_mpg_result.sol.t[end] .+ (1:length(q4_sm_mpg_opt_states.h_c)) .* q4_sm_mpg_params.mpc_params.time_step
+        plot!(
+            latest_prediction_plot,
+            q4_sm_mpg_prediction_times,
+            q4_sm_mpg_opt_states.h_c ./ 1e3,
+            label = "Latest Q4 SM-MPG prediction",
+            linestyle = :dashdot,
+            linewidth = 2,
+        )
+    end
     display(latest_prediction_plot)
 end
 
@@ -504,6 +598,8 @@ end
 plot_combined_state_errors(
     (shrinking, "Shrinking horizon MPC"), 
     (mpg_result, "MPg"),
+    (integral_mpg_result, "Integral MPg"),
     (open_loop_result, "Open Loop"),
-    (sm_mpg_result, "SM-MPG")
+    (sm_mpg_result, "SM-MPG"),
+    (q4_sm_mpg_result, "Q4 SM-MPG")
 )

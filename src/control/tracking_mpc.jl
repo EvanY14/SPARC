@@ -17,6 +17,17 @@ const _OPTIMAL_CONTROL_CACHE = Ref{Any}(nothing)
 const _TRACKING_STATE_WIDE_MIN = [-1.0e7, -100.0 * π, -100.0 * π, -1.0e5, -100.0 * π, -100.0 * π]
 const _TRACKING_STATE_WIDE_MAX = [1.0e7, 100.0 * π, 100.0 * π, 1.0e5, 100.0 * π, 100.0 * π]
 const _TRACKING_USE_ENERGY_REFERENCE_ALIGNMENT = false
+const _TRACKING_STATE_SCALES = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
+const _TRACKING_SLIDING_STAGE_WEIGHTS = Diagonal([3000.0, 3000.0, 5000.0, 100.0, 10.0, 100.0])
+const _TRACKING_SLIDING_TERMINAL_WEIGHTS = Diagonal([3000.0, 3000.0, 3000.0, 100.0, 10.0, 100.0])
+const _TRACKING_CONTROL_DEVIATION_WEIGHTS = Diagonal([1.0e-2, 0.1])
+const _TRACKING_CONTROL_INCREMENT_WEIGHTS = Diagonal([0.5, 0.5])
+
+_tracking_state_scale_matrix() = Diagonal(1.0 ./ _TRACKING_STATE_SCALES)
+_tracking_sliding_stage_weight_matrix() = _TRACKING_SLIDING_STAGE_WEIGHTS
+_tracking_sliding_terminal_weight_matrix() = _TRACKING_SLIDING_TERMINAL_WEIGHTS
+_tracking_control_deviation_weight_matrix() = _TRACKING_CONTROL_DEVIATION_WEIGHTS
+_tracking_control_increment_weight_matrix() = _TRACKING_CONTROL_INCREMENT_WEIGHTS
 
 function _blockdiag_dense(mats::Vector{<:AbstractMatrix})
 	rows = sum(size(M, 1) for M in mats)
@@ -776,8 +787,7 @@ function trackingmpc(integrator)
 	A_seq = Vector{Matrix{Float64}}(undef, N)
 	B_seq = Vector{Matrix{Float64}}(undef, N)
 	d_seq = Vector{Vector{Float64}}(undef, N)
-	state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
-	G = Diagonal(1.0 ./ state_scales)
+	G = _tracking_state_scale_matrix()
 	G_seq = [Matrix{Float64}(G) for _ in 1:N]
 
 	for j in 1:N
@@ -811,15 +821,15 @@ function trackingmpc(integrator)
 	# Previous Qs[h]=10, Qs[v]=10 gave effective weights 1e9× smaller than angles;
 	# the fix is to raise them proportionally.
 	# Emulate output-tracking: heavily weight Altitude, Lat, Lon. Relax v, γ, ψ.
-	Qs = Diagonal([3000.0, 3000.0, 5000.0, 100.0, 10.0, 100.0])
+	Qs = _tracking_sliding_stage_weight_matrix()
 	Qs_seq = [Matrix{Float64}(Qs) for _ in 1:N]
 	# Keep controls free enough to reject model mismatch, but avoid using bank as
 	# a nearly-free crossrange actuator when its predicted benefit is ambiguous.
-	Rv = Diagonal([1.0e-2, 0.1])
-	RΔ = Diagonal([0.5, 0.5])
+	Rv = _tracking_control_deviation_weight_matrix()
+	RΔ = _tracking_control_increment_weight_matrix()
 	Rv_seq = [Matrix{Float64}(Rv) for _ in 1:N]
 	RΔ_seq = [Matrix{Float64}(RΔ) for _ in 1:N]
-	P_normalized = Diagonal([3000.0, 3000.0, 3000.0, 100.0, 10.0, 100.0])
+	P_normalized = _tracking_sliding_terminal_weight_matrix()
 	P = Matrix{Float64}(G' * P_normalized * G)
 
 	αmin, βmin = _CONTROL_MIN_RAD

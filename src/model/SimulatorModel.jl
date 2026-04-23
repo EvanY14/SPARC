@@ -1,6 +1,5 @@
 module SimulatorModel
     using StaticArrays
-    using Reexport
     using DifferentialEquations
     using PythonCall
     using JuMP
@@ -12,11 +11,21 @@ module SimulatorModel
     export atmospheric_density
     export altitude_termination_condition, atmospheric_density_callback, control_callback
     export saving_callback, saved_values
-    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, sm_mpg, openloopcontrol, openloop
+    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, mpg_integral_tracking, mpg_integral, sm_mpg, sm_mpg_q4_tracking, sm_mpg_q4, sm_mpg_integral_tracking, sm_mpg_integral, openloopcontrol, openloop
     export VehicleDefinition, VEHICLE, VEHICLE_MASS, VEHICLE_REFERENCE_AREA
+    export EDLParams, MPCParams, EDLCache, TargetStates, OptimizationStates
+    export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere, DateTime
     include("vehicle.jl")
     include("types.jl")
-    @reexport using .ModelTypes
+    using .ModelTypes: EDLParams,
+                       MPCParams,
+                       EDLCache,
+                       TargetStates,
+                       OptimizationStates,
+                       PolyfitAtmosphere,
+                       ExponentialAtmosphere,
+                       GramAtmosphere,
+                       DateTime
     include("earth_atmosphere_polyfit.jl")
 
     # Simulator models
@@ -30,7 +39,10 @@ module SimulatorModel
     include("../control/tracking_mpc.jl")
     include("../control/tracking_mpc_shrinking_horizon.jl")
     include("../control/model_predictive_guidance.jl")
+    include("../control/mpg_integral_tracking.jl")
     include("../control/sm_mpg.jl")
+    include("../control/sm_mpg_q4_tracking.jl")
+    include("../control/sm_mpg_integral_tracking.jl")
     include("../control/open_loop_control.jl")
 
     # Integration callbacks

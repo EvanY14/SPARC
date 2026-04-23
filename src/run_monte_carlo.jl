@@ -2,6 +2,9 @@ include("model/SimulatorModel.jl")
 
 using .SimulatorModel
 using StaticArrays
+using PythonCall
+using LinearAlgebra
+using Statistics
 ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
 using Plots
 using DifferentialEquations
@@ -35,10 +38,66 @@ function open_loop_control(integrator)
 end
 
 const CONTROLLER_CASES = (
-    ControllerCase("Tracking MPC", "tracking_mpc", SimulatorModel.trackingmpc_shrinking, :blue),
     ControllerCase("MPG", "mpg", SimulatorModel.mpg, :green),
+    ControllerCase("MPG + Integral Action", "mpg_integral", SimulatorModel.mpg_integral, :orange),
+    ControllerCase("SM-MPG", "sm_mpg", SimulatorModel.sm_mpg, :blue),
     ControllerCase("Open Loop", "open_loop", open_loop_control, :red),
 )
+const GRAM_DIRECTORY = "GRAMpy/"
+const GRAM_DATA_DIRECTORY = "GRAM_Data"
+const GRAM_PLANET = "earth"
+const GRAM_START_TIME = SimulatorModel.DateTime(2012, 8, 6, 5, 10, 46.0)
+const NOMINAL_ATMOSPHERE_CACHE = Ref{Any}(nothing)
+const MONTE_CARLO_ATMOSPHERE_CACHE = Ref{Any}(nothing)
+
+function _reset_gram_atmosphere!(
+    atmosphere_model::SimulatorModel.GramAtmosphere;
+    monte_carlo::Bool,
+)
+    atmosphere = atmosphere_model.gram_atmosphere
+    gram = atmosphere_model.gram
+    atmosphere.setPerturbationScales(1.5)
+    atmosphere.setMinRelativeStepSize(0.5)
+    atmosphere.setSeed(monte_carlo ? rand(1:10_000) : 1001)
+
+    ttime = gram.GramTime()
+    ttime.setStartTime(
+        GRAM_START_TIME.year,
+        GRAM_START_TIME.month,
+        GRAM_START_TIME.day,
+        GRAM_START_TIME.hours,
+        GRAM_START_TIME.minutes,
+        GRAM_START_TIME.secs,
+        gram.UTC,
+        gram.PET,
+    )
+    atmosphere.setStartTime(ttime)
+    return atmosphere_model
+end
+
+function _cached_gram_atmosphere(; monte_carlo::Bool)
+    cache = monte_carlo ? MONTE_CARLO_ATMOSPHERE_CACHE : NOMINAL_ATMOSPHERE_CACHE
+    if cache[] === nothing
+        cache[] = SimulatorModel.GramAtmosphere(
+            GRAM_DIRECTORY,
+            GRAM_DATA_DIRECTORY,
+            monte_carlo,
+            GRAM_PLANET,
+            GRAM_START_TIME,
+        )
+    end
+    return _reset_gram_atmosphere!(cache[]; monte_carlo = monte_carlo)
+end
+
+function _collect_runtime_garbage!()
+    GC.gc(false)
+    try
+        PythonCall.GC.gc()
+    catch
+        nothing
+    end
+    return nothing
+end
 
 mutable struct MonteCarloResults
     case::ControllerCase
@@ -50,6 +109,8 @@ mutable struct MonteCarloResults
     final_x_positions::Vector{Float64}
     final_y_positions::Vector{Float64}
     final_z_positions::Vector{Float64}
+    final_cartesian_position_error_norms::Vector{Float64}
+    final_cartesian_velocity_error_norms::Vector{Float64}
     altitude_profiles::Vector{Union{Nothing, Vector{Float64}}}
     longitude_profiles::Vector{Union{Nothing, Vector{Float64}}}
     latitude_profiles::Vector{Union{Nothing, Vector{Float64}}}
@@ -97,6 +158,8 @@ function MonteCarloResults(case::ControllerCase, n::Int)
     fill!(control_times, nothing)
     return MonteCarloResults(
         case,
+        fill(NaN, n),
+        fill(NaN, n),
         fill(NaN, n),
         fill(NaN, n),
         fill(NaN, n),
@@ -170,20 +233,65 @@ function cartesian_histories_km(altitudes, longitudes, latitudes, planet_radius)
     return x, y, z
 end
 
+function local_velocity_to_cartesian_mps(
+    longitude::Real,
+    latitude::Real,
+    speed::Real,
+    flight_path_angle::Real,
+    azimuth::Real,
+)
+    lon = Float64(longitude)
+    lat = Float64(latitude)
+    v = Float64(speed)
+    γ = Float64(flight_path_angle)
+    ψ = Float64(azimuth)
+
+    up = SVector(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat))
+    north = SVector(-sin(lat) * cos(lon), -sin(lat) * sin(lon), cos(lat))
+    east = SVector(-sin(lon), cos(lon), 0.0)
+
+    horizontal_speed = v * cos(γ)
+    v_up = v * sin(γ)
+    v_north = horizontal_speed * cos(ψ)
+    v_east = horizontal_speed * sin(ψ)
+
+    return v_up .* up .+ v_north .* north .+ v_east .* east
+end
+
 optimal_ref_x_km, optimal_ref_y_km, optimal_ref_z_km = cartesian_histories_km(
     optimal_control.Altitude_100km .* 1e5,
     deg2rad.(optimal_control.Longitude_deg),
     deg2rad.(optimal_control.Latitude_deg),
     R,
 )
+const REFERENCE_FINAL_CARTESIAN_POSITION_KM = SVector(
+    optimal_ref_x_km[end],
+    optimal_ref_y_km[end],
+    optimal_ref_z_km[end],
+)
+const REFERENCE_FINAL_CARTESIAN_VELOCITY_MPS = local_velocity_to_cartesian_mps(
+    deg2rad(Float64(optimal_control[end, :Longitude_deg])),
+    deg2rad(Float64(optimal_control[end, :Latitude_deg])),
+    Float64(optimal_control[end, :Velocity_1000mps]) * velocity_scale,
+    deg2rad(Float64(optimal_control[end, :FlightPath_deg])),
+    deg2rad(Float64(optimal_control[end, :Azimuth_deg])),
+)
 
-target_altitude = 11848.0
-target_velocity = 500.0
-target_γ = deg2rad(-5.0)
-target_states = SimulatorModel.TargetStates(altitude=target_altitude, longitude=deg2rad(133.4), latitude=deg2rad(-4.2), velocity=target_velocity, flight_path_angle=target_γ)
+target_altitude = Float64(optimal_control[end, :Altitude_100km]) * 1e5
+target_velocity = Float64(optimal_control[end, :Velocity_1000mps]) * velocity_scale
+target_γ = deg2rad(Float64(optimal_control[end, :FlightPath_deg]))
+target_longitude = deg2rad(Float64(optimal_control[end, :Longitude_deg]))
+target_latitude = deg2rad(Float64(optimal_control[end, :Latitude_deg]))
+target_states = SimulatorModel.TargetStates(
+    altitude=target_altitude,
+    longitude=target_longitude,
+    latitude=target_latitude,
+    velocity=target_velocity,
+    flight_path_angle=target_γ,
+)
 
 function build_edl_params(control_function::Function; disturbance::Bool, monte_carlo::Bool)
-    atmosphere = SimulatorModel.GramAtmosphere("GRAMpy/", "GRAM_Data", monte_carlo, "earth", SimulatorModel.DateTime(2012, 8, 6, 5, 10, 46.0))
+    atmosphere = _cached_gram_atmosphere(; monte_carlo = monte_carlo)
     mpc_params = SimulatorModel.MPCParams{100, 7, 8, 0.1}(
         n_horizon=100,
         time_step=0.75,
@@ -232,21 +340,6 @@ function run_case(control_function::Function; disturbance::Bool, monte_carlo::Bo
     return sol, local_saved_values
 end
 
-function saved_value_vectors(local_saved_values)
-    saved_data = local_saved_values.saveval
-    densities = zeros(length(saved_data))
-    betas = zeros(length(saved_data))
-    alphas = zeros(length(saved_data))
-    heat_rates = zeros(length(saved_data))
-    for i in eachindex(saved_data)
-        densities[i] = saved_data[i][1]
-        betas[i] = saved_data[i][2]
-        alphas[i] = saved_data[i][3]
-        heat_rates[i] = saved_data[i][4]
-    end
-    return densities, betas, alphas, heat_rates
-end
-
 function monte_carlo_atmospheric_density_effect!(integrator)
     h = integrator.u[1]
     ϕ = integrator.u[2]
@@ -263,18 +356,60 @@ end
 
 monte_carlo_atmospheric_density_callback = DiscreteCallback((u, t, integrator) -> true, monte_carlo_atmospheric_density_effect!)
 
-function valid_indices(result::MonteCarloResults)
-    return findall(
-        i -> result.times[i] !== nothing &&
-            result.altitude_profiles[i] !== nothing &&
-            result.velocity_profiles[i] !== nothing,
-        eachindex(result.times),
+function _nominal_summary_row(case::ControllerCase, nominal_sol)
+    if nominal_sol === nothing
+        return DataFrame()
+    end
+
+    final_altitude_m = getindex(nominal_sol.u[end], 1)
+    final_longitude_rad = getindex(nominal_sol.u[end], 2)
+    final_latitude_rad = getindex(nominal_sol.u[end], 3)
+    final_velocity_mps = getindex(nominal_sol.u[end], 4)
+    final_fpa_rad = getindex(nominal_sol.u[end], 5)
+    final_azimuth_rad = getindex(nominal_sol.u[end], 6)
+    final_heat_load = getindex(nominal_sol.u[end], 7)
+    nominal_x_km, nominal_y_km, nominal_z_km = latlonalt_to_cartesian_km(
+        final_latitude_rad,
+        final_longitude_rad,
+        final_altitude_m,
+        R,
+    )
+    final_velocity_cartesian_mps = local_velocity_to_cartesian_mps(
+        final_longitude_rad,
+        final_latitude_rad,
+        final_velocity_mps,
+        final_fpa_rad,
+        final_azimuth_rad,
+    )
+
+    return DataFrame(
+        Controller=[case.name],
+        ControllerSlug=[case.slug],
+        RunType=["Nominal"],
+        Simulation=[0],
+        Completed=[true],
+        FinalLongitude_deg=[rad2deg(final_longitude_rad)],
+        FinalLatitude_deg=[rad2deg(final_latitude_rad)],
+        FinalAltitude_km=[final_altitude_m / 1e3],
+        FinalVelocity_kms=[final_velocity_mps / 1e3],
+        FinalHeatLoad_Jm2=[final_heat_load],
+        FinalPositionX_km=[nominal_x_km],
+        FinalPositionY_km=[nominal_y_km],
+        FinalPositionZ_km=[nominal_z_km],
+        FinalCartesianPositionErrorNorm_km=[
+            norm(SVector(nominal_x_km, nominal_y_km, nominal_z_km) .- REFERENCE_FINAL_CARTESIAN_POSITION_KM)
+        ],
+        FinalCartesianVelocityErrorNorm_kms=[
+            norm(final_velocity_cartesian_mps .- REFERENCE_FINAL_CARTESIAN_VELOCITY_MPS) / 1e3
+        ],
     )
 end
 
-function write_case_summary(result::MonteCarloResults, data_dir::AbstractString)
-    summary_df = DataFrame(
+function build_case_summary(result::MonteCarloResults, nominal_sol)
+    monte_carlo_df = DataFrame(
         Controller=fill(result.case.name, NUM_SIMULATIONS),
+        ControllerSlug=fill(result.case.slug, NUM_SIMULATIONS),
+        RunType=fill("MonteCarlo", NUM_SIMULATIONS),
         Simulation=collect(1:NUM_SIMULATIONS),
         Completed=.!isnan.(result.final_latitudes),
         FinalLongitude_deg=result.final_longitudes,
@@ -285,27 +420,19 @@ function write_case_summary(result::MonteCarloResults, data_dir::AbstractString)
         FinalPositionX_km=result.final_x_positions,
         FinalPositionY_km=result.final_y_positions,
         FinalPositionZ_km=result.final_z_positions,
+        FinalCartesianPositionErrorNorm_km=result.final_cartesian_position_error_norms,
+        FinalCartesianVelocityErrorNorm_kms=result.final_cartesian_velocity_error_norms,
     )
-    CSV.write(joinpath(data_dir, "summary.csv"), summary_df)
-    return summary_df
+    nominal_df = _nominal_summary_row(result.case, nominal_sol)
+    return isempty(nominal_df) ? monte_carlo_df : vcat(monte_carlo_df, nominal_df)
 end
 
-function write_case_output!(result::MonteCarloResults, sim::Int, sol_mc, local_saved_values, data_dir::AbstractString)
+function store_case_output!(result::MonteCarloResults, sim::Int, sol_mc)
     altitudes_m = getindex.(sol_mc.u, 1)
     longitudes_rad = getindex.(sol_mc.u, 2)
     latitudes_rad = getindex.(sol_mc.u, 3)
     x_km, y_km, z_km = cartesian_histories_km(altitudes_m, longitudes_rad, latitudes_rad, R)
 
-    result.altitude_profiles[sim] = altitudes_m ./ 1e3
-    result.longitude_profiles[sim] = rad2deg.(longitudes_rad)
-    result.latitude_profiles[sim] = rad2deg.(latitudes_rad)
-    result.velocity_profiles[sim] = getindex.(sol_mc.u, 4) ./ 1e3
-    result.flight_path_profiles[sim] = rad2deg.(getindex.(sol_mc.u, 5))
-    result.azimuth_profiles[sim] = rad2deg.(getindex.(sol_mc.u, 6))
-    result.x_profiles[sim] = x_km
-    result.y_profiles[sim] = y_km
-    result.z_profiles[sim] = z_km
-    result.times[sim] = sol_mc.t
     result.final_latitudes[sim] = rad2deg(getindex(sol_mc.u[end], 3))
     result.final_longitudes[sim] = rad2deg(getindex(sol_mc.u[end], 2))
     result.final_altitudes[sim] = getindex(sol_mc.u[end], 1) / 1e3
@@ -314,141 +441,111 @@ function write_case_output!(result::MonteCarloResults, sim::Int, sol_mc, local_s
     result.final_x_positions[sim] = x_km[end]
     result.final_y_positions[sim] = y_km[end]
     result.final_z_positions[sim] = z_km[end]
-
-    _, betas, alphas, heat_rates = saved_value_vectors(local_saved_values)
-    result.alpha_profiles[sim] = rad2deg.(alphas)
-    result.beta_profiles[sim] = rad2deg.(betas)
-    result.heat_rate_profiles[sim] = heat_rates
-    result.control_times[sim] = local_saved_values.t
-
-    trajectory_df = DataFrame(
-        Controller=fill(result.case.name, length(sol_mc.t)),
-        Simulation=fill(sim, length(sol_mc.t)),
-        Time_s=sol_mc.t,
-        Altitude_km=result.altitude_profiles[sim],
-        Longitude_deg=rad2deg.(longitudes_rad),
-        Latitude_deg=rad2deg.(latitudes_rad),
-        PositionX_km=x_km,
-        PositionY_km=y_km,
-        PositionZ_km=z_km,
-        Velocity_kms=result.velocity_profiles[sim],
-        FlightPath_deg=rad2deg.(getindex.(sol_mc.u, 5)),
-        Azimuth_deg=rad2deg.(getindex.(sol_mc.u, 6)),
-        HeatLoad_Jm2=getindex.(sol_mc.u, 7),
+    result.final_cartesian_position_error_norms[sim] = norm(
+        SVector(x_km[end], y_km[end], z_km[end]) .- REFERENCE_FINAL_CARTESIAN_POSITION_KM
     )
-    CSV.write(joinpath(data_dir, "trajectory_$(sim).csv"), trajectory_df)
-
-    control_df = DataFrame(
-        Controller=fill(result.case.name, length(local_saved_values.t)),
-        Simulation=fill(sim, length(local_saved_values.t)),
-        Time_s=local_saved_values.t,
-        AngleOfAttack_deg=result.alpha_profiles[sim],
-        BankAngle_deg=result.beta_profiles[sim],
-        HeatRate_Wm2=heat_rates,
+    final_velocity_cartesian_mps = local_velocity_to_cartesian_mps(
+        longitudes_rad[end],
+        latitudes_rad[end],
+        getindex(sol_mc.u[end], 4),
+        getindex(sol_mc.u[end], 5),
+        getindex(sol_mc.u[end], 6),
     )
-    CSV.write(joinpath(data_dir, "control_$(sim).csv"), control_df)
+    result.final_cartesian_velocity_error_norms[sim] =
+        norm(final_velocity_cartesian_mps .- REFERENCE_FINAL_CARTESIAN_VELOCITY_MPS) / 1e3
 end
 
 function run_monte_carlo_case(case::ControllerCase)
-    data_dir = joinpath(DATA_DIR, case.slug)
-    mkpath(data_dir)
-
     result = MonteCarloResults(case, NUM_SIMULATIONS)
     nominal_sol = nothing
     if RUN_NOMINAL_OVERLAY
         nominal_sol, _ = run_case(case.control_function; disturbance=false, monte_carlo=false, dt=0.1)
+        _collect_runtime_garbage!()
     end
 
     println("Running $(case.name) Monte Carlo cases")
     @showprogress for sim in 1:NUM_SIMULATIONS
         try
             sol_mc, local_saved_values = run_case(case.control_function; disturbance=true, monte_carlo=true, dt=0.5)
-            write_case_output!(result, sim, sol_mc, local_saved_values, data_dir)
+            store_case_output!(result, sim, sol_mc)
+            sol_mc = nothing
+            local_saved_values = nothing
+            _collect_runtime_garbage!()
         catch e
             @warn "Monte Carlo case failed" controller=case.name sim exception=(e, catch_backtrace())
         end
     end
 
-    summary_df = write_case_summary(result, data_dir)
-    return result, nominal_sol, summary_df
+    _collect_runtime_garbage!()
+    return build_case_summary(result, nominal_sol)
 end
 
-function plot_profiles(results, nominal_solutions, profile_field::Symbol; title::String, ylabel::String, filename::String)
-    plt = plot(title=title, xlabel="Time (s)", ylabel=ylabel, legend=true)
-    for (result, nominal_sol) in zip(results, nominal_solutions)
-        valid = valid_indices(result)
-        for (j, i) in enumerate(valid)
-            profiles = getfield(result, profile_field)
-            plot!(
-                plt,
-                something(result.times[i]),
-                something(profiles[i]),
-                color=result.case.color,
-                alpha=0.25,
-                label=j == 1 ? "$(result.case.name) MC" : false,
-            )
-        end
-        if nominal_sol !== nothing
-            nominal_y = profile_field == :altitude_profiles ? getindex.(nominal_sol.u, 1) ./ 1e3 : getindex.(nominal_sol.u, 4) ./ 1e3
-            plot!(plt, nominal_sol.t, nominal_y, color=result.case.color, linewidth=2, linestyle=:dash, label="$(result.case.name) nominal")
+function _summary_case_color(controller_slug::AbstractString)
+    for case in CONTROLLER_CASES
+        if case.slug == controller_slug
+            return case.color
         end
     end
-    if DISPLAY_PLOTS
-        display(plt)
-    end
-    savefig(plt, joinpath(PLOTS_DIR, filename))
+    return :black
 end
 
-function plot_control_profiles(results, profile_field::Symbol; title::String, ylabel::String, filename::String)
-    plt = plot(title=title, xlabel="Time (s)", ylabel=ylabel, legend=true)
-    for result in results
-        control_profiles = getfield(result, profile_field)
-        valid = findall(i -> result.control_times[i] !== nothing && control_profiles[i] !== nothing, eachindex(result.control_times))
-        for (j, i) in enumerate(valid)
-            plot!(
-                plt,
-                something(result.control_times[i]),
-                something(control_profiles[i]),
-                color=result.case.color,
-                alpha=0.25,
-                label=j == 1 ? "$(result.case.name) MC" : false,
-            )
+function _summary_case_name(controller_slug::AbstractString)
+    for case in CONTROLLER_CASES
+        if case.slug == controller_slug
+            return case.name
         end
     end
-    if DISPLAY_PLOTS
-        display(plt)
-    end
-    savefig(plt, joinpath(PLOTS_DIR, filename))
+    return String(controller_slug)
 end
 
-function plot_landing_locations(results, nominal_solutions)
+function _filter_summary_rows(summary_df::DataFrame; include_open_loop::Bool=true, run_type::Union{Nothing, String}=nothing)
+    df = summary_df
+    if !include_open_loop
+        df = filter(row -> row.ControllerSlug != "open_loop", df)
+    end
+    if run_type !== nothing
+        df = filter(row -> row.RunType == run_type, df)
+    end
+    return df
+end
+
+function load_summary_table()
+    return CSV.read(joinpath(DATA_DIR, "summary.csv"), DataFrame)
+end
+
+function plot_landing_locations(summary_df::DataFrame)
     plt = plot(
         xlabel="Longitude (deg)",
         ylabel="Latitude (deg)",
         title="Monte Carlo Simulations: Final Landing Locations",
         legend=true,
     )
-    for (result, nominal_sol) in zip(results, nominal_solutions)
-        valid = valid_indices(result)
+    monte_carlo_df = _filter_summary_rows(summary_df; run_type = "MonteCarlo")
+    nominal_df = _filter_summary_rows(summary_df; run_type = "Nominal")
+    for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
+        case_df = filter(row -> row.ControllerSlug == controller_slug, monte_carlo_df)
+        color = _summary_case_color(controller_slug)
+        label = _summary_case_name(controller_slug)
         plot!(
             plt,
-            result.final_longitudes[valid],
-            result.final_latitudes[valid],
+            Float64.(case_df.FinalLongitude_deg),
+            Float64.(case_df.FinalLatitude_deg),
             seriestype=:scatter,
-            color=result.case.color,
-            label="$(result.case.name) landings",
+            color=color,
+            label="$(label) landings",
             alpha=0.65,
         )
-        if nominal_sol !== nothing
+        case_nominal_df = filter(row -> row.ControllerSlug == controller_slug, nominal_df)
+        if !isempty(case_nominal_df)
             plot!(
                 plt,
-                [rad2deg(getindex(nominal_sol.u[end], 2))],
-                [rad2deg(getindex(nominal_sol.u[end], 3))],
+                [Float64(case_nominal_df[1, :FinalLongitude_deg])],
+                [Float64(case_nominal_df[1, :FinalLatitude_deg])],
                 seriestype=:scatter,
-                color=result.case.color,
+                color=color,
                 markershape=:star5,
                 markersize=8,
-                label="$(result.case.name) nominal",
+                label="$(label) nominal",
             )
         end
     end
@@ -459,82 +556,49 @@ function plot_landing_locations(results, nominal_solutions)
     savefig(plt, joinpath(PLOTS_DIR, "monte_carlo_final_landing_locations.pdf"))
 end
 
-function plot_cartesian_ground_track(results, nominal_solutions)
-    plt = plot(
-        optimal_ref_x_km,
-        optimal_ref_y_km,
-        xlabel="X (km)",
-        ylabel="Y (km)",
-        title="Monte Carlo Simulations: Cartesian Ground Track",
-        label="Reference",
-        color=:black,
-        linewidth=2,
-        legend=true,
-    )
-    for (result, nominal_sol) in zip(results, nominal_solutions)
-        valid = findall(i -> result.x_profiles[i] !== nothing && result.y_profiles[i] !== nothing, eachindex(result.x_profiles))
-        for (j, i) in enumerate(valid)
-            plot!(
-                plt,
-                something(result.x_profiles[i]),
-                something(result.y_profiles[i]),
-                color=result.case.color,
-                alpha=0.25,
-                label=j == 1 ? "$(result.case.name) MC" : false,
-            )
-        end
-        if nominal_sol !== nothing
-            nominal_x, nominal_y, _ = cartesian_histories_km(
-                getindex.(nominal_sol.u, 1),
-                getindex.(nominal_sol.u, 2),
-                getindex.(nominal_sol.u, 3),
-                R,
-            )
-            plot!(plt, nominal_x, nominal_y, color=result.case.color, linewidth=2, linestyle=:dash, label="$(result.case.name) nominal")
-        end
-    end
-    target_x, target_y, _ = latlonalt_to_cartesian_km(target_states.latitude, target_states.longitude, target_states.altitude, R)
-    plot!(plt, [target_x], [target_y], seriestype=:scatter, color=:black, markershape=:diamond, markersize=8, label="Target")
-    if DISPLAY_PLOTS
-        display(plt)
-    end
-    savefig(plt, joinpath(PLOTS_DIR, "monte_carlo_cartesian_ground_track.pdf"))
-end
-
-function plot_final_cartesian_locations(results, nominal_solutions)
+function plot_final_cartesian_locations(
+    summary_df::DataFrame;
+    include_open_loop::Bool=true,
+    include_open_loop_nominal::Bool=true,
+    filename::String=include_open_loop_nominal ?
+        "monte_carlo_final_cartesian_locations.pdf" :
+        "monte_carlo_final_cartesian_locations_without_open_loop_nominal.pdf",
+    title::String=include_open_loop_nominal ?
+        "Monte Carlo Simulations: Final Cartesian Locations" :
+        "Monte Carlo Simulations: Final Cartesian Locations (Without Open Loop Nominal)",
+)
     plt = plot(
         xlabel="X (km)",
         ylabel="Y (km)",
-        title="Monte Carlo Simulations: Final Cartesian Locations",
+        title=title,
         legend=true,
     )
-    for (result, nominal_sol) in zip(results, nominal_solutions)
-        valid = findall(i -> isfinite(result.final_x_positions[i]) && isfinite(result.final_y_positions[i]), eachindex(result.final_x_positions))
+    monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
+    nominal_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "Nominal")
+    for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
+        case_df = filter(row -> row.ControllerSlug == controller_slug, monte_carlo_df)
+        color = _summary_case_color(controller_slug)
+        label = _summary_case_name(controller_slug)
         plot!(
             plt,
-            result.final_x_positions[valid],
-            result.final_y_positions[valid],
+            Float64.(case_df.FinalPositionX_km),
+            Float64.(case_df.FinalPositionY_km),
             seriestype=:scatter,
-            color=result.case.color,
-            label="$(result.case.name) final positions",
+            color=color,
+            label="$(label) final positions",
             alpha=0.65,
         )
-        if nominal_sol !== nothing
-            nominal_x, nominal_y, _ = latlonalt_to_cartesian_km(
-                getindex(nominal_sol.u[end], 3),
-                getindex(nominal_sol.u[end], 2),
-                getindex(nominal_sol.u[end], 1),
-                R,
-            )
+        case_nominal_df = filter(row -> row.ControllerSlug == controller_slug, nominal_df)
+        if !isempty(case_nominal_df) && (include_open_loop_nominal || controller_slug != "open_loop")
             plot!(
                 plt,
-                [nominal_x],
-                [nominal_y],
+                [Float64(case_nominal_df[1, :FinalPositionX_km])],
+                [Float64(case_nominal_df[1, :FinalPositionY_km])],
                 seriestype=:scatter,
-                color=result.case.color,
+                color=color,
                 markershape=:star5,
                 markersize=8,
-                label="$(result.case.name) nominal",
+                label="$(label) nominal",
             )
         end
     end
@@ -543,100 +607,141 @@ function plot_final_cartesian_locations(results, nominal_solutions)
     if DISPLAY_PLOTS
         display(plt)
     end
-    savefig(plt, joinpath(PLOTS_DIR, "monte_carlo_final_cartesian_locations.pdf"))
+    savefig(plt, joinpath(PLOTS_DIR, filename))
 end
 
-mkpath(DATA_DIR)
-mkpath(PLOTS_DIR)
-
-case_outputs = []
-for case in CONTROLLER_CASES
-    push!(case_outputs, run_monte_carlo_case(case))
-end
-results = first.(case_outputs)
-nominal_solutions = getindex.(case_outputs, 2)
-summary_dfs = getindex.(case_outputs, 3)
-CSV.write(joinpath(DATA_DIR, "summary.csv"), vcat(summary_dfs...))
-
-plot_profiles(
-    results,
-    nominal_solutions,
-    :altitude_profiles;
-    title="Monte Carlo Simulations: Altitude Profiles",
-    ylabel="Altitude (km)",
-    filename="monte_carlo_altitude_profiles.pdf",
-)
-plot_profiles(
-    results,
-    nominal_solutions,
-    :velocity_profiles;
-    title="Monte Carlo Simulations: Velocity Profiles",
-    ylabel="Velocity (km/s)",
-    filename="monte_carlo_velocity_profiles.pdf",
-)
-plot_landing_locations(results, nominal_solutions)
-plot_cartesian_ground_track(results, nominal_solutions)
-plot_final_cartesian_locations(results, nominal_solutions)
-plot_control_profiles(
-    results,
-    :alpha_profiles;
-    title="Monte Carlo Simulations: Angle of Attack Profiles",
-    ylabel="Angle of Attack (deg)",
-    filename="monte_carlo_angle_of_attack_profiles.pdf",
-)
-plot_control_profiles(
-    results,
-    :beta_profiles;
-    title="Monte Carlo Simulations: Bank Angle Profiles",
-    ylabel="Bank Angle (deg)",
-    filename="monte_carlo_bank_angle_profiles.pdf",
-)
-plot_control_profiles(
-    results,
-    :heat_rate_profiles;
-    title="Monte Carlo Simulations: Heat Rate Profiles",
-    ylabel="Heat Rate (W/m²)",
-    filename="monte_carlo_heat_rate_profiles.pdf",
-)
-
-function plot_mc_state_errors(results)
-    plt_alt = plot(title="Altitude Error (km)", xlabel="Time (s)", ylabel="Error (km)", legend=false)
-    plt_lon = plot(title="Longitude Error (deg)", xlabel="Time (s)", ylabel="Error (deg)", legend=false)
-    plt_lat = plot(title="Latitude Error (deg)", xlabel="Time (s)", ylabel="Error (deg)", legend=false)
-    plt_vel = plot(title="Velocity Error (km/s)", xlabel="Time (s)", ylabel="Error (km/s)", legend=false)
-    plt_fpa = plot(title="FPA Error (deg)", xlabel="Time (s)", ylabel="Error (deg)", legend=false)
-    plt_azi = plot(title="Azimuth Error (deg)", xlabel="Time (s)", ylabel="Error (deg)", legend=false)
-    
-    for result in results
-        valid = valid_indices(result)
-        for (j, i) in enumerate(valid)
-            t = something(result.times[i])
-            
-            alt_err = something(result.altitude_profiles[i]) .- (interp_altitude.(t) ./ 1e3)
-            plot!(plt_alt, t, alt_err, color=result.case.color, alpha=0.25)
-            
-            lon_err = something(result.longitude_profiles[i]) .- rad2deg.(interp_longitude.(t))
-            plot!(plt_lon, t, lon_err, color=result.case.color, alpha=0.25)
-            
-            lat_err = something(result.latitude_profiles[i]) .- rad2deg.(interp_latitude.(t))
-            plot!(plt_lat, t, lat_err, color=result.case.color, alpha=0.25)
-            
-            vel_err = something(result.velocity_profiles[i]) .- (interp_velocity.(t) ./ 1e3)
-            plot!(plt_vel, t, vel_err, color=result.case.color, alpha=0.25)
-            
-            fpa_err = something(result.flight_path_profiles[i]) .- rad2deg.(interp_flight_path.(t))
-            plot!(plt_fpa, t, fpa_err, color=result.case.color, alpha=0.25)
-            
-            azi_err = something(result.azimuth_profiles[i]) .- rad2deg.(interp_azimuth.(t))
-            plot!(plt_azi, t, azi_err, color=result.case.color, alpha=0.25)
+function cleanup_data_dir!()
+    mkpath(DATA_DIR)
+    for name in readdir(DATA_DIR)
+        if name != "summary.csv"
+            rm(joinpath(DATA_DIR, name); recursive=true, force=true)
         end
     end
-    
-    fig = plot(plt_alt, plt_lon, plt_lat, plt_vel, plt_fpa, plt_azi, layout=(3, 2), size=(1200, 1000), margin=5Plots.mm, plot_title="Monte Carlo State Errors")
-    if DISPLAY_PLOTS
-        display(fig)
-    end
-    savefig(fig, joinpath(PLOTS_DIR, "monte_carlo_state_errors.pdf"))
+    return nothing
 end
 
-plot_mc_state_errors(results)
+function plot_final_cartesian_velocity_error_norms(
+    summary_df::DataFrame;
+    include_open_loop::Bool=true,
+    filename::String=include_open_loop ?
+        "monte_carlo_final_cartesian_velocity_error_norm_with_open_loop.pdf" :
+        "monte_carlo_final_cartesian_velocity_error_norm_without_open_loop.pdf",
+    title::String=include_open_loop ?
+        "Final Cartesian Velocity Error Norm" :
+        "Final Cartesian Velocity Error Norm (No Open Loop)",
+)
+    filtered_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
+
+    plt = plot(
+        xlabel="Simulation Index",
+        ylabel="Final Cartesian Velocity Error Norm (km/s)",
+        title=title,
+        legend=true,
+    )
+    for controller_slug in unique(String.(filtered_df.ControllerSlug))
+        case_df = filter(row -> row.ControllerSlug == controller_slug, filtered_df)
+        errs = Float64.(case_df.FinalCartesianVelocityErrorNorm_kms)
+        if isempty(errs)
+            continue
+        end
+        sims = Int.(case_df.Simulation)
+        color = _summary_case_color(controller_slug)
+        label = _summary_case_name(controller_slug)
+        plot!(
+            plt,
+            sims,
+            errs,
+            seriestype=:scatter,
+            color=color,
+            alpha=0.75,
+            label=label,
+        )
+        mean_err = mean(errs)
+        plot!(
+            plt,
+            [minimum(sims), maximum(sims)],
+            [mean_err, mean_err],
+            color=color,
+            linestyle=:dash,
+            linewidth=2,
+            label="$(label) mean",
+        )
+    end
+    if DISPLAY_PLOTS
+        display(plt)
+    end
+    savefig(plt, joinpath(PLOTS_DIR, filename))
+end
+
+function plot_final_cartesian_position_error_norms(
+    summary_df::DataFrame;
+    include_open_loop::Bool=false,
+    filename::String=include_open_loop ?
+        "monte_carlo_final_cartesian_position_error_norm_with_open_loop.pdf" :
+        "monte_carlo_final_cartesian_position_error_norm_without_open_loop.pdf",
+    title::String=include_open_loop ?
+        "Final Cartesian Position Error Norm" :
+        "Final Cartesian Position Error Norm (No Open Loop)",
+)
+    filtered_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
+
+    plt = plot(
+        xlabel="Simulation Index",
+        ylabel="Final Cartesian Position Error Norm (km)",
+        title=title,
+        legend=true,
+    )
+    for controller_slug in unique(String.(filtered_df.ControllerSlug))
+        case_df = filter(row -> row.ControllerSlug == controller_slug, filtered_df)
+        errs = Float64.(case_df.FinalCartesianPositionErrorNorm_km)
+        if isempty(errs)
+            continue
+        end
+        sims = Int.(case_df.Simulation)
+        color = _summary_case_color(controller_slug)
+        label = _summary_case_name(controller_slug)
+        plot!(
+            plt,
+            sims,
+            errs,
+            seriestype=:scatter,
+            color=color,
+            alpha=0.75,
+            label=label,
+        )
+        mean_err = mean(errs)
+        plot!(
+            plt,
+            [minimum(sims), maximum(sims)],
+            [mean_err, mean_err],
+            color=color,
+            linestyle=:dash,
+            linewidth=2,
+            label="$(label) mean",
+        )
+    end
+    if DISPLAY_PLOTS
+        display(plt)
+    end
+    savefig(plt, joinpath(PLOTS_DIR, filename))
+end
+
+mkpath(PLOTS_DIR)
+cleanup_data_dir!()
+summary_dfs = [run_monte_carlo_case(case) for case in CONTROLLER_CASES]
+CSV.write(joinpath(DATA_DIR, "summary.csv"), vcat(summary_dfs...))
+cleanup_data_dir!()
+
+summary_df = load_summary_table()
+plot_landing_locations(summary_df)
+plot_final_cartesian_locations(summary_df; include_open_loop=true, include_open_loop_nominal=true)
+plot_final_cartesian_locations(
+    summary_df;
+    include_open_loop=false,
+    include_open_loop_nominal=false,
+    filename="monte_carlo_final_cartesian_locations_without_open_loop_nominal.pdf",
+    title="Monte Carlo Simulations: Final Cartesian Locations (Without Open Loop)",
+)
+plot_final_cartesian_position_error_norms(summary_df; include_open_loop=false)
+plot_final_cartesian_velocity_error_norms(summary_df; include_open_loop=true)
+plot_final_cartesian_velocity_error_norms(summary_df; include_open_loop=false)

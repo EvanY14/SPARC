@@ -52,6 +52,7 @@ module ModelTypes
         m_exp::Float64 = 0.0
         prev_x::MVector{n_states_plus_control, Float64} = MVector{n_states_plus_control, Float64}(zeros(n_states_plus_control))
         prev_ΔU::Ref{Vector{Float64}} = Ref(Float64[])
+        integral_error::Ref{Vector{Float64}} = Ref(Float64[])
         # prev_u::Float64 = 0.0
         input_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
         target_mask::SVector{n_states_plus_control, Int64} = SVector{n_states_plus_control, Int64}(zeros(n_states_plus_control))
