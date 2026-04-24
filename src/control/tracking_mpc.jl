@@ -17,13 +17,12 @@ const _OPTIMAL_CONTROL_CACHE = Ref{Any}(nothing)
 const _TRACKING_STATE_WIDE_MIN = [-1.0e7, -100.0 * π, -100.0 * π, -1.0e5, -100.0 * π, -100.0 * π]
 const _TRACKING_STATE_WIDE_MAX = [1.0e7, 100.0 * π, 100.0 * π, 1.0e5, 100.0 * π, 100.0 * π]
 const _TRACKING_USE_ENERGY_REFERENCE_ALIGNMENT = false
-const _TRACKING_STATE_SCALES = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
 const _TRACKING_SLIDING_STAGE_WEIGHTS = Diagonal([3000.0, 3000.0, 5000.0, 100.0, 10.0, 100.0])
 const _TRACKING_SLIDING_TERMINAL_WEIGHTS = Diagonal([3000.0, 3000.0, 3000.0, 100.0, 10.0, 100.0])
 const _TRACKING_CONTROL_DEVIATION_WEIGHTS = Diagonal([1.0e-2, 0.1])
 const _TRACKING_CONTROL_INCREMENT_WEIGHTS = Diagonal([0.5, 0.5])
 
-_tracking_state_scale_matrix() = Diagonal(1.0 ./ _TRACKING_STATE_SCALES)
+_tracking_state_scale_matrix() = _mpg_state_scale_matrix()
 _tracking_sliding_stage_weight_matrix() = _TRACKING_SLIDING_STAGE_WEIGHTS
 _tracking_sliding_terminal_weight_matrix() = _TRACKING_SLIDING_TERMINAL_WEIGHTS
 _tracking_control_deviation_weight_matrix() = _TRACKING_CONTROL_DEVIATION_WEIGHTS

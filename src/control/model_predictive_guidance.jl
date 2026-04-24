@@ -195,13 +195,9 @@ function model_predictive_guidance(integrator)
 	dx0 = x_current - x_ref_current
 	w = _mpg_node_weights(step_sizes)
 
-	state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
-	G = Diagonal(1.0 ./ state_scales)
-	Q_normalized = Diagonal([1200.0, 3500.0, 3500.0, 1200.0, 700.0, 1200.0])
-	F_normalized = Diagonal([2500.0, 180000.0, 180000.0, 4500.0, 2500.0, 4000.0])
-	Q = Matrix{Float64}(G' * Q_normalized * G)
-	F = Matrix{Float64}(G' * F_normalized * G)
-	R = Diagonal([1.0, 1.0])
+	Q = _mpg_stage_state_cost_matrix()
+	F = _mpg_terminal_state_cost_matrix()
+	R = _mpg_control_cost_matrix()
 	kR = 1.0
 	kF = 1.0
 

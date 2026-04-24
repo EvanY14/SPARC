@@ -14,9 +14,9 @@ using DataFrames
 using Interpolations
 include("reference/trajectory_initialization.jl")
 
-gr()
+plotly()
 
-const NUM_SIMULATIONS = parse(Int, get(ENV, "SPARC_MC_RUNS", "50"))
+const NUM_SIMULATIONS = parse(Int, get(ENV, "SPARC_MC_RUNS", "100"))
 const OUTPUT_DIR = get(ENV, "SPARC_MC_OUTPUT_DIR", "monte_carlo_output")
 const RUN_NOMINAL_OVERLAY = parse(Bool, get(ENV, "SPARC_MC_NOMINAL_OVERLAY", "true"))
 const DISPLAY_PLOTS = parse(Bool, get(ENV, "SPARC_MC_DISPLAY", "false"))
@@ -40,7 +40,7 @@ end
 const CONTROLLER_CASES = (
     ControllerCase("MPG", "mpg", SimulatorModel.mpg, :green),
     ControllerCase("MPG + Integral Action", "mpg_integral", SimulatorModel.mpg_integral, :orange),
-    ControllerCase("SM-MPG", "sm_mpg", SimulatorModel.sm_mpg, :blue),
+    ControllerCase("SM-MPG", "sm_mpg", SimulatorModel.sm_mpg, :purple),
     ControllerCase("Open Loop", "open_loop", open_loop_control, :red),
 )
 const GRAM_DIRECTORY = "GRAMpy/"
@@ -293,8 +293,8 @@ target_states = SimulatorModel.TargetStates(
 function build_edl_params(control_function::Function; disturbance::Bool, monte_carlo::Bool)
     atmosphere = _cached_gram_atmosphere(; monte_carlo = monte_carlo)
     mpc_params = SimulatorModel.MPCParams{100, 7, 8, 0.1}(
-        n_horizon=100,
-        time_step=0.75,
+        n_horizon=SimulatorModel.mpg_default_horizon(),
+        time_step=SimulatorModel.mpg_default_time_step(),
         H_SCALE=1.0e5,
         V_SCALE=1.0e4,
         T_SCALE=1.0,
@@ -513,15 +513,24 @@ function load_summary_table()
     return CSV.read(joinpath(DATA_DIR, "summary.csv"), DataFrame)
 end
 
-function plot_landing_locations(summary_df::DataFrame)
+function plot_landing_locations(
+    summary_df::DataFrame;
+    include_open_loop::Bool=true,
+    filename::String=include_open_loop ?
+        "monte_carlo_final_landing_locations.pdf" :
+        "monte_carlo_final_landing_locations_without_open_loop.pdf",
+    title::String=include_open_loop ?
+        "Monte Carlo Simulations: Final Landing Locations" :
+        "Monte Carlo Simulations: Final Landing Locations (Without Open Loop)",
+)
     plt = plot(
         xlabel="Longitude (deg)",
         ylabel="Latitude (deg)",
-        title="Monte Carlo Simulations: Final Landing Locations",
+        title=title,
         legend=true,
     )
-    monte_carlo_df = _filter_summary_rows(summary_df; run_type = "MonteCarlo")
-    nominal_df = _filter_summary_rows(summary_df; run_type = "Nominal")
+    monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
+    nominal_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "Nominal")
     for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
         case_df = filter(row -> row.ControllerSlug == controller_slug, monte_carlo_df)
         color = _summary_case_color(controller_slug)
@@ -543,7 +552,7 @@ function plot_landing_locations(summary_df::DataFrame)
                 [Float64(case_nominal_df[1, :FinalLatitude_deg])],
                 seriestype=:scatter,
                 color=color,
-                markershape=:star5,
+                markershape=:hexagon,
                 markersize=8,
                 label="$(label) nominal",
             )
@@ -553,7 +562,7 @@ function plot_landing_locations(summary_df::DataFrame)
     if DISPLAY_PLOTS
         display(plt)
     end
-    savefig(plt, joinpath(PLOTS_DIR, "monte_carlo_final_landing_locations.pdf"))
+    savefig(plt, joinpath(PLOTS_DIR, filename))
 end
 
 function plot_final_cartesian_locations(
@@ -596,7 +605,7 @@ function plot_final_cartesian_locations(
                 [Float64(case_nominal_df[1, :FinalPositionY_km])],
                 seriestype=:scatter,
                 color=color,
-                markershape=:star5,
+                markershape=:hexagon,
                 markersize=8,
                 label="$(label) nominal",
             )
@@ -733,7 +742,8 @@ CSV.write(joinpath(DATA_DIR, "summary.csv"), vcat(summary_dfs...))
 cleanup_data_dir!()
 
 summary_df = load_summary_table()
-plot_landing_locations(summary_df)
+plot_landing_locations(summary_df; include_open_loop=true)
+plot_landing_locations(summary_df; include_open_loop=false)
 plot_final_cartesian_locations(summary_df; include_open_loop=true, include_open_loop_nominal=true)
 plot_final_cartesian_locations(
     summary_df;

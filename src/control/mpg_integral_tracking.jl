@@ -1,5 +1,57 @@
-const _MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS = Diagonal([800.0, 1500.0, 1500.0, 800.0, 300.0, 800.0])
-const _MPG_INTEGRAL_INCREMENT_WEIGHTS = Diagonal([1.0, 1.0])
+const _MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS = Ref([800.0, 1500.0, 1500.0, 800.0, 300.0, 800.0])
+const _MPG_INTEGRAL_INCREMENT_WEIGHTS = Ref([1.0, 1.0])
+const _MPG_INTEGRAL_STATE_GAIN = Ref(0.02)
+const _MPG_INTEGRAL_INCREMENT_GAIN = Ref(0.0)
+
+function _mpg_integral_state_normalized_weight_matrix()
+    return Diagonal(Float64.(_MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS[]))
+end
+
+function _mpg_integral_increment_weight_matrix()
+    return Diagonal(Float64.(_MPG_INTEGRAL_INCREMENT_WEIGHTS[]))
+end
+
+function mpg_integral_tuning_snapshot()
+    return (
+        state_normalized_weights = Float64.(_MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS[]),
+        increment_weights = Float64.(_MPG_INTEGRAL_INCREMENT_WEIGHTS[]),
+        state_gain = _MPG_INTEGRAL_STATE_GAIN[],
+        increment_gain = _MPG_INTEGRAL_INCREMENT_GAIN[],
+    )
+end
+
+function set_mpg_integral_tuning!(;
+    state_normalized_weights=nothing,
+    increment_weights=nothing,
+    state_gain=nothing,
+    increment_gain=nothing,
+)
+    if state_normalized_weights !== nothing
+        weights = Float64.(collect(state_normalized_weights))
+        length(weights) == 6 || throw(ArgumentError("state_normalized_weights must have length 6"))
+        all(isfinite, weights) || throw(ArgumentError("state_normalized_weights must be finite"))
+        all(>=(0.0), weights) || throw(ArgumentError("state_normalized_weights must be nonnegative"))
+        _MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS[] = weights
+    end
+    if increment_weights !== nothing
+        weights = Float64.(collect(increment_weights))
+        length(weights) == 2 || throw(ArgumentError("increment_weights must have length 2"))
+        all(isfinite, weights) || throw(ArgumentError("increment_weights must be finite"))
+        all(>=(0.0), weights) || throw(ArgumentError("increment_weights must be nonnegative"))
+        _MPG_INTEGRAL_INCREMENT_WEIGHTS[] = weights
+    end
+    if state_gain !== nothing
+        gain = Float64(state_gain)
+        (isfinite(gain) && gain >= 0.0) || throw(ArgumentError("state_gain must be finite and nonnegative"))
+        _MPG_INTEGRAL_STATE_GAIN[] = gain
+    end
+    if increment_gain !== nothing
+        gain = Float64(increment_gain)
+        (isfinite(gain) && gain >= 0.0) || throw(ArgumentError("increment_gain must be finite and nonnegative"))
+        _MPG_INTEGRAL_INCREMENT_GAIN[] = gain
+    end
+    return mpg_integral_tuning_snapshot()
+end
 
 function _ensure_mpg_integral_state!(mpc_params, dim::Int)
     integral_error = mpc_params.integral_error[]
@@ -38,9 +90,9 @@ end
 
 function _mpg_integral_weight_matrix(step_sizes::AbstractVector{<:Real})
     horizon_scale = max(sum(Float64.(step_sizes)), 1.0)
-    integral_scales = _TRACKING_STATE_SCALES .* horizon_scale
+    integral_scales = mpg_state_scales() .* horizon_scale
     G_i = Diagonal(1.0 ./ integral_scales)
-    return Matrix{Float64}(G_i' * _MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS * G_i)
+    return _MPG_INTEGRAL_STATE_GAIN[] .* Matrix{Float64}(G_i' * _mpg_integral_state_normalized_weight_matrix() * G_i)
 end
 
 function _add_mpg_integral_state_cost!(
@@ -71,17 +123,20 @@ function _add_mpg_actual_increment_cost!(
     q_qp::Vector{Float64},
     U_nodes::Matrix{Float64},
     previous_u::AbstractVector{<:Real},
-    step_sizes::AbstractVector{<:Real},
+    step_sizes::AbstractVector{<:Real};
+    RΔ::AbstractMatrix{<:Real}=_mpg_integral_increment_weight_matrix(),
+    gain::Real=_MPG_INTEGRAL_INCREMENT_GAIN[],
 )
     m, nodes = size(U_nodes)
     interval_weights = _normalized_stage_weights(step_sizes)
-    RΔ = Matrix{Float64}(_MPG_INTEGRAL_INCREMENT_WEIGHTS)
+    RΔ_matrix = Matrix{Float64}(RΔ)
+    gain_scale = Float64(gain)
 
     first_weight = Float64(interval_weights[1])
     first_rng = 1:m
     first_ref_delta = U_nodes[:, 1] .- Float64.(previous_u)
-    P_qp[first_rng, first_rng] .+= 2.0 .* first_weight .* RΔ
-    q_qp[first_rng] .+= 2.0 .* first_weight .* (RΔ * first_ref_delta)
+    P_qp[first_rng, first_rng] .+= 2.0 .* gain_scale .* first_weight .* RΔ_matrix
+    q_qp[first_rng] .+= 2.0 .* gain_scale .* first_weight .* (RΔ_matrix * first_ref_delta)
 
     for k in 2:nodes
         weight = Float64(interval_weights[k - 1])
@@ -89,16 +144,16 @@ function _add_mpg_actual_increment_cost!(
         curr_rng = (m * (k - 1) + 1):(m * k)
         ref_delta = U_nodes[:, k] .- U_nodes[:, k - 1]
 
-        P_qp[prev_rng, prev_rng] .+= 2.0 .* weight .* RΔ
-        P_qp[curr_rng, curr_rng] .+= 2.0 .* weight .* RΔ
-        P_qp[prev_rng, curr_rng] .-= 2.0 .* weight .* RΔ
-        P_qp[curr_rng, prev_rng] .-= 2.0 .* weight .* RΔ
+        P_qp[prev_rng, prev_rng] .+= 2.0 .* gain_scale .* weight .* RΔ_matrix
+        P_qp[curr_rng, curr_rng] .+= 2.0 .* gain_scale .* weight .* RΔ_matrix
+        P_qp[prev_rng, curr_rng] .-= 2.0 .* gain_scale .* weight .* RΔ_matrix
+        P_qp[curr_rng, prev_rng] .-= 2.0 .* gain_scale .* weight .* RΔ_matrix
 
-        q_qp[prev_rng] .-= 2.0 .* weight .* (RΔ * ref_delta)
-        q_qp[curr_rng] .+= 2.0 .* weight .* (RΔ * ref_delta)
+        q_qp[prev_rng] .-= 2.0 .* gain_scale .* weight .* (RΔ_matrix * ref_delta)
+        q_qp[curr_rng] .+= 2.0 .* gain_scale .* weight .* (RΔ_matrix * ref_delta)
     end
 
-    return RΔ
+    return RΔ_matrix
 end
 
 function mpg_integral_tracking(integrator)
@@ -149,13 +204,9 @@ function mpg_integral_tracking(integrator)
     dx0 = x_current - x_ref_current
     w = _mpg_node_weights(step_sizes)
 
-    state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
-    G = Diagonal(1.0 ./ state_scales)
-    Q_normalized = Diagonal([1200.0, 3500.0, 3500.0, 1200.0, 700.0, 1200.0])
-    F_normalized = Diagonal([2500.0, 180000.0, 180000.0, 4500.0, 2500.0, 4000.0])
-    Q = Matrix{Float64}(G' * Q_normalized * G)
-    F = Matrix{Float64}(G' * F_normalized * G)
-    R = Diagonal([1.0, 1.0])
+    Q = _mpg_stage_state_cost_matrix()
+    F = _mpg_terminal_state_cost_matrix()
+    R = _mpg_control_cost_matrix()
     kR = 1.0
     kF = 1.0
 
@@ -182,7 +233,15 @@ function mpg_integral_tracking(integrator)
     if !all(isfinite, prev_u) || norm(prev_u) == 0.0
         prev_u .= [Float64(integrator.p.α), Float64(integrator.p.β)]
     end
-    _add_mpg_actual_increment_cost!(P_qp, q_qp, U_nodes, prev_u, step_sizes)
+    _add_mpg_actual_increment_cost!(
+        P_qp,
+        q_qp,
+        U_nodes,
+        prev_u,
+        step_sizes;
+        RΔ = _mpg_integral_increment_weight_matrix(),
+        gain = _MPG_INTEGRAL_INCREMENT_GAIN[],
+    )
 
     P_qp = 0.5 .* (P_qp .+ P_qp') .+ 1.0e-9 .* Matrix{Float64}(I, nz, nz)
 

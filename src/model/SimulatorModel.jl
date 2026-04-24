@@ -11,7 +11,9 @@ module SimulatorModel
     export atmospheric_density
     export altitude_termination_condition, atmospheric_density_callback, control_callback
     export saving_callback, saved_values
-    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, mpg_integral_tracking, mpg_integral, sm_mpg, sm_mpg_q4_tracking, sm_mpg_q4, sm_mpg_integral_tracking, sm_mpg_integral, openloopcontrol, openloop
+    export mpc, ssimpc, trackingmpc, trackingmpc_shrinking_horizon, trackingmpc_shrinking, model_predictive_guidance, mpg, mpg_integral_tracking, mpg_integral, sm_mpg_tracking, sm_mpg, openloopcontrol, openloop
+    export mpg_state_scales, mpg_default_horizon, mpg_default_time_step, mpg_tracking_tuning_snapshot, set_mpg_tracking_tuning!
+    export mpg_integral_tuning_snapshot, set_mpg_integral_tuning!, sm_mpg_tuning_snapshot, set_sm_mpg_tuning!
     export VehicleDefinition, VEHICLE, VEHICLE_MASS, VEHICLE_REFERENCE_AREA
     export EDLParams, MPCParams, EDLCache, TargetStates, OptimizationStates
     export PolyfitAtmosphere, ExponentialAtmosphere, GramAtmosphere, DateTime
@@ -36,13 +38,12 @@ module SimulatorModel
     include("../control/control_limits.jl")
     include("../control/regular_mpc.jl")
     include("../control/ssi_mpc.jl")
+    include("../control/mpg_shared_tuning.jl")
     include("../control/tracking_mpc.jl")
     include("../control/tracking_mpc_shrinking_horizon.jl")
     include("../control/model_predictive_guidance.jl")
     include("../control/mpg_integral_tracking.jl")
     include("../control/sm_mpg.jl")
-    include("../control/sm_mpg_q4_tracking.jl")
-    include("../control/sm_mpg_integral_tracking.jl")
     include("../control/open_loop_control.jl")
 
     # Integration callbacks

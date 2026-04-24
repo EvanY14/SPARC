@@ -96,8 +96,7 @@ function trackingmpc_shrinking_horizon(integrator)
 	A_seq = Vector{Matrix{Float64}}(undef, N)
 	B_seq = Vector{Matrix{Float64}}(undef, N)
 	d_seq = Vector{Vector{Float64}}(undef, N)
-	state_scales = [1.0e5, 1.0, 1.0, 1.0e4, 1.0, 1.0]
-	G = Diagonal(1.0 ./ state_scales)
+	G = _mpg_state_scale_matrix()
 	G_seq = [Matrix{Float64}(G) for _ in 1:N]
 
 	for j in 1:N

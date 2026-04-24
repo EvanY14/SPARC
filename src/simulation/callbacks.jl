@@ -54,11 +54,8 @@ function _stores_two_control_prev_x(control_function)
            control_function === mpg ||
            control_function === mpg_integral_tracking ||
            control_function === mpg_integral ||
-           control_function === sm_mpg ||
-           control_function === sm_mpg_q4_tracking ||
-           control_function === sm_mpg_q4 ||
-           control_function === sm_mpg_integral_tracking ||
-           control_function === sm_mpg_integral
+           control_function === sm_mpg_tracking ||
+           control_function === sm_mpg
 end
 
 function _sync_applied_control_to_prev_x!(integrator, α_limited, β_limited)
