@@ -1,7 +1,7 @@
 const _MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS = Ref(collect(diag(_mpg_stage_state_normalized_weight_matrix())))
 const _MPG_INTEGRAL_INCREMENT_WEIGHTS = Ref([1.0, 1.0])
-const _MPG_INTEGRAL_STATE_GAIN = Ref(0.0)
-const _MPG_INTEGRAL_INCREMENT_GAIN = Ref(0.0)
+const _MPG_INTEGRAL_STATE_GAIN = Ref(0.01)
+const _MPG_INTEGRAL_INCREMENT_GAIN = Ref(0.001)
 
 function _mpg_integral_state_normalized_weight_matrix()
     return Diagonal(Float64.(_MPG_INTEGRAL_STATE_NORMALIZED_WEIGHTS[]))
