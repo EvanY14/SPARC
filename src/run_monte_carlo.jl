@@ -24,7 +24,7 @@ const REPLOT_ONLY = parse(Bool, get(ENV, "SPARC_MC_REPLOT_ONLY", "false"))
 const DATA_DIR = joinpath(OUTPUT_DIR, "data")
 const PLOTS_DIR = joinpath(OUTPUT_DIR, "plots")
 const MONTE_CARLO_LEGEND_POSITION = :outertopright
-const MONTE_CARLO_PLOT_MARGIN = 12Plots.mm
+const MONTE_CARLO_PLOT_MARGIN = 6Plots.mm
 const THREE_SIGMA = 3.0
 const MONTE_CARLO_MAX_STATE_PROFILE_POINTS = parse(Int, get(ENV, "SPARC_MC_MAX_STATE_POINTS", "600"))
 const MONTE_CARLO_MAX_CONTROL_PROFILE_POINTS = parse(Int, get(ENV, "SPARC_MC_MAX_CONTROL_POINTS", "600"))
@@ -33,6 +33,13 @@ const MONTE_CARLO_GUIDE_FONTSIZE = 9
 const MONTE_CARLO_TICK_FONTSIZE = 8
 const MONTE_CARLO_LEGEND_FONTSIZE = 8
 const IEEE_SINGLE_COLUMN_STATE_SIZE = (520, 760)
+const MONTE_CARLO_COMBINED_MARGIN = 5Plots.mm
+const MONTE_CARLO_LEFT_MARGIN = 11Plots.mm
+const MONTE_CARLO_RIGHT_MARGIN = 5Plots.mm
+const MONTE_CARLO_BOTTOM_MARGIN = 7Plots.mm
+const MONTE_CARLO_TOP_MARGIN = 4Plots.mm
+const MONTE_CARLO_TRAJECTORY_ALPHA = 0.3
+const MONTE_CARLO_TRAJECTORY_LINEWIDTH = 1.15
 
 struct ControllerCase
     name::String
@@ -650,16 +657,16 @@ function _monte_carlo_plot_kwargs(; is_3d::Bool=false)
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
         legendfont = font(MONTE_CARLO_LEGEND_FONTSIZE),
-        size = is_3d ? (1050, 760) : (980, 680),
+        size = IEEE_SINGLE_COLUMN_STATE_SIZE,
     )
 end
 
 function _monte_carlo_subplot_kwargs(; legend::Bool=false)
     return (
         legend = legend,
-        left_margin = 8Plots.mm,
-        right_margin = 6Plots.mm,
-        bottom_margin = 7Plots.mm,
+        left_margin = 7Plots.mm,
+        right_margin = 4Plots.mm,
+        bottom_margin = 5Plots.mm,
         titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
@@ -737,7 +744,7 @@ function plot_landing_locations(
     plt = plot(
         xlabel="Longitude (deg)",
         ylabel="Latitude (deg)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
     for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
@@ -786,7 +793,7 @@ function plot_landing_locations_with_ellipses(
     plt = plot(
         xlabel="Longitude (deg)",
         ylabel="Latitude (deg)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
     for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
@@ -862,7 +869,7 @@ function plot_final_cartesian_locations(
     plt = plot(
         xlabel="X (km)",
         ylabel="Y (km)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
     for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
@@ -913,7 +920,7 @@ function plot_final_cartesian_locations_with_ellipses(
     plt = plot(
         xlabel="X (km)",
         ylabel="Y (km)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     monte_carlo_df = _filter_summary_rows(summary_df; include_open_loop = include_open_loop, run_type = "MonteCarlo")
     for controller_slug in unique(String.(monte_carlo_df.ControllerSlug))
@@ -989,7 +996,7 @@ function plot_state_profile_bundle(
     plt = plot(
         xlabel="Time (s)",
         ylabel=ylabel,
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     if reference_times !== nothing && reference_values !== nothing
         plot!(
@@ -1013,8 +1020,8 @@ function plot_state_profile_bundle(
                 something(result.times[i]),
                 something(getfield(result, profile_field)[i]),
                 color=result.case.color,
-                alpha=0.15,
-                linewidth=1,
+                alpha=MONTE_CARLO_TRAJECTORY_ALPHA,
+                linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH,
                 label=j == 1 ? "$(result.case.name) MC" : false,
             )
         end
@@ -1035,7 +1042,7 @@ function plot_control_profile_bundle(
     plt = plot(
         xlabel="Time (s)",
         ylabel=ylabel,
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     if reference_times !== nothing && reference_values !== nothing
         plot!(
@@ -1059,8 +1066,8 @@ function plot_control_profile_bundle(
                 something(getfield(result, profile_field)[i]),
                 seriestype = :steppost,
                 color=result.case.color,
-                alpha=0.15,
-                linewidth=1,
+                alpha=MONTE_CARLO_TRAJECTORY_ALPHA,
+                linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH,
                 label=j == 1 ? "$(result.case.name) MC" : false,
             )
         end
@@ -1089,7 +1096,7 @@ function plot_mc_state_profiles_combined(
         plt = plot(
             xlabel="Time (s)",
             ylabel=ylabel,
-            _monte_carlo_subplot_kwargs()...,
+            ; _monte_carlo_subplot_kwargs()...,
         )
         plot!(
             plt,
@@ -1111,8 +1118,8 @@ function plot_mc_state_profiles_combined(
                     something(result.times[i]),
                     something(getfield(result, profile_field)[i]),
                     color=result.case.color,
-                    alpha=0.15,
-                    linewidth=1,
+                    alpha=MONTE_CARLO_TRAJECTORY_ALPHA,
+                    linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH,
                     label=j == 1 ? "$(result.case.name) MC" : false,
                 )
             end
@@ -1126,7 +1133,11 @@ function plot_mc_state_profiles_combined(
         subplots[3];
         layout=(3, 1),
         size=IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin=10Plots.mm,
+        margin=MONTE_CARLO_COMBINED_MARGIN,
+        left_margin=MONTE_CARLO_LEFT_MARGIN,
+        right_margin=MONTE_CARLO_RIGHT_MARGIN,
+        bottom_margin=MONTE_CARLO_BOTTOM_MARGIN,
+        top_margin=MONTE_CARLO_TOP_MARGIN,
     )
     _save_plot_and_cleanup!(fig_part1, filename_part1)
 
@@ -1136,7 +1147,11 @@ function plot_mc_state_profiles_combined(
         subplots[6];
         layout=(3, 1),
         size=IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin=10Plots.mm,
+        margin=MONTE_CARLO_COMBINED_MARGIN,
+        left_margin=MONTE_CARLO_LEFT_MARGIN,
+        right_margin=MONTE_CARLO_RIGHT_MARGIN,
+        bottom_margin=MONTE_CARLO_BOTTOM_MARGIN,
+        top_margin=MONTE_CARLO_TOP_MARGIN,
     )
     _save_plot_and_cleanup!(fig_part2, filename_part2)
 end
@@ -1157,7 +1172,7 @@ function plot_mc_control_profiles_combined(
         plt = plot(
             xlabel="Time (s)",
             ylabel=ylabel,
-            _monte_carlo_subplot_kwargs(legend = true)...,
+            ; _monte_carlo_subplot_kwargs(legend = true)...,
         )
         plot!(
             plt,
@@ -1179,8 +1194,8 @@ function plot_mc_control_profiles_combined(
                     something(getfield(result, profile_field)[i]),
                     seriestype = :steppost,
                     color=result.case.color,
-                    alpha=0.15,
-                    linewidth=1,
+                    alpha=MONTE_CARLO_TRAJECTORY_ALPHA,
+                    linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH,
                     label=j == 1 ? "$(result.case.name) MC" : false,
                 )
             end
@@ -1191,8 +1206,12 @@ function plot_mc_control_profiles_combined(
     fig = plot(
         subplots...;
         layout=(2, 1),
-        size=(1220, 980),
-        margin=10Plots.mm,
+        size=IEEE_SINGLE_COLUMN_STATE_SIZE,
+        margin=MONTE_CARLO_COMBINED_MARGIN,
+        left_margin=MONTE_CARLO_LEFT_MARGIN,
+        right_margin=MONTE_CARLO_RIGHT_MARGIN,
+        bottom_margin=MONTE_CARLO_BOTTOM_MARGIN,
+        top_margin=MONTE_CARLO_TOP_MARGIN,
     )
     _save_plot_and_cleanup!(fig, filename)
 end
@@ -1215,7 +1234,7 @@ function plot_cartesian_ground_track_profiles(
     plt = plot(
         xlabel="X (km)",
         ylabel="Y (km)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     if include_reference
         plot!(
@@ -1238,8 +1257,8 @@ function plot_cartesian_ground_track_profiles(
                 something(result.x_profiles[i]),
                 something(result.y_profiles[i]),
                 color=result.case.color,
-                alpha=0.15,
-                linewidth=1,
+                alpha=MONTE_CARLO_TRAJECTORY_ALPHA,
+                linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH,
                 label=j == 1 ? "$(result.case.name) MC" : false,
             )
         end
@@ -1259,12 +1278,12 @@ function plot_cartesian_ground_track_profiles(
 end
 
 function plot_mc_state_errors(results::Vector{MonteCarloResults})
-    plt_alt = plot(xlabel="Time (s)", ylabel="Error (km)"; _monte_carlo_subplot_kwargs()...)
-    plt_lon = plot(xlabel="Time (s)", ylabel="Error (deg)"; _monte_carlo_subplot_kwargs()...)
-    plt_lat = plot(xlabel="Time (s)", ylabel="Error (deg)"; _monte_carlo_subplot_kwargs()...)
-    plt_vel = plot(xlabel="Time (s)", ylabel="Error (km/s)"; _monte_carlo_subplot_kwargs()...)
-    plt_fpa = plot(xlabel="Time (s)", ylabel="Error (deg)"; _monte_carlo_subplot_kwargs()...)
-    plt_azi = plot(xlabel="Time (s)", ylabel="Error (deg)"; _monte_carlo_subplot_kwargs()...)
+    plt_alt = plot(xlabel="Time (s)", ylabel="Altitude Error (km)"; _monte_carlo_subplot_kwargs()...)
+    plt_lon = plot(xlabel="Time (s)", ylabel="Longitude Error (deg)"; _monte_carlo_subplot_kwargs()...)
+    plt_lat = plot(xlabel="Time (s)", ylabel="Latitude Error (deg)"; _monte_carlo_subplot_kwargs()...)
+    plt_vel = plot(xlabel="Time (s)", ylabel="Velocity Error (km/s)"; _monte_carlo_subplot_kwargs()...)
+    plt_fpa = plot(xlabel="Time (s)", ylabel="Flight Path Angle Error (deg)"; _monte_carlo_subplot_kwargs()...)
+    plt_azi = plot(xlabel="Time (s)", ylabel="Azimuth Error (deg)"; _monte_carlo_subplot_kwargs()...)
 
     for result in results
         valid = valid_profile_indices(
@@ -1281,12 +1300,12 @@ function plot_mc_state_errors(results::Vector{MonteCarloResults})
         )
         for i in valid
             t = something(result.times[i])
-            plot!(plt_alt, t, something(result.altitude_profiles[i]) .- (interp_altitude.(t) ./ 1e3), color=result.case.color, alpha=0.15, linewidth=1, label=false)
-            plot!(plt_lon, t, something(result.longitude_profiles[i]) .- rad2deg.(interp_longitude.(t)), color=result.case.color, alpha=0.15, linewidth=1, label=false)
-            plot!(plt_lat, t, something(result.latitude_profiles[i]) .- rad2deg.(interp_latitude.(t)), color=result.case.color, alpha=0.15, linewidth=1, label=false)
-            plot!(plt_vel, t, something(result.velocity_profiles[i]) .- (interp_velocity.(t) ./ 1e3), color=result.case.color, alpha=0.15, linewidth=1, label=false)
-            plot!(plt_fpa, t, something(result.flight_path_profiles[i]) .- rad2deg.(interp_flight_path.(t)), color=result.case.color, alpha=0.15, linewidth=1, label=false)
-            plot!(plt_azi, t, something(result.azimuth_profiles[i]) .- rad2deg.(interp_azimuth.(t)), color=result.case.color, alpha=0.15, linewidth=1, label=false)
+            plot!(plt_alt, t, something(result.altitude_profiles[i]) .- (interp_altitude.(t) ./ 1e3), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
+            plot!(plt_lon, t, something(result.longitude_profiles[i]) .- rad2deg.(interp_longitude.(t)), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
+            plot!(plt_lat, t, something(result.latitude_profiles[i]) .- rad2deg.(interp_latitude.(t)), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
+            plot!(plt_vel, t, something(result.velocity_profiles[i]) .- (interp_velocity.(t) ./ 1e3), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
+            plot!(plt_fpa, t, something(result.flight_path_profiles[i]) .- rad2deg.(interp_flight_path.(t)), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
+            plot!(plt_azi, t, something(result.azimuth_profiles[i]) .- rad2deg.(interp_azimuth.(t)), color=result.case.color, alpha=MONTE_CARLO_TRAJECTORY_ALPHA, linewidth=MONTE_CARLO_TRAJECTORY_LINEWIDTH, label=false)
         end
     end
 
@@ -1296,7 +1315,11 @@ function plot_mc_state_errors(results::Vector{MonteCarloResults})
         plt_lat,
         layout=(3, 1),
         size=IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin=5Plots.mm,
+        margin=MONTE_CARLO_COMBINED_MARGIN,
+        left_margin=MONTE_CARLO_LEFT_MARGIN,
+        right_margin=MONTE_CARLO_RIGHT_MARGIN,
+        bottom_margin=MONTE_CARLO_BOTTOM_MARGIN,
+        top_margin=MONTE_CARLO_TOP_MARGIN,
     )
     _save_plot_and_cleanup!(fig_part1, "monte_carlo_state_errors_part1.pdf")
 
@@ -1306,7 +1329,11 @@ function plot_mc_state_errors(results::Vector{MonteCarloResults})
         plt_azi,
         layout=(3, 1),
         size=IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin=5Plots.mm,
+        margin=MONTE_CARLO_COMBINED_MARGIN,
+        left_margin=MONTE_CARLO_LEFT_MARGIN,
+        right_margin=MONTE_CARLO_RIGHT_MARGIN,
+        bottom_margin=MONTE_CARLO_BOTTOM_MARGIN,
+        top_margin=MONTE_CARLO_TOP_MARGIN,
     )
     _save_plot_and_cleanup!(fig_part2, "monte_carlo_state_errors_part2.pdf")
 end
@@ -1344,7 +1371,7 @@ function plot_final_cartesian_velocity_error_norms(
     plt = plot(
         xlabel="Simulation Index",
         ylabel="Final Cartesian Velocity Error Norm (km/s)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     for controller_slug in unique(String.(filtered_df.ControllerSlug))
         case_df = filter(row -> row.ControllerSlug == controller_slug, filtered_df)
@@ -1393,7 +1420,7 @@ function plot_final_cartesian_position_error_norms(
     plt = plot(
         xlabel="Simulation Index",
         ylabel="Final Cartesian Position Error Norm (km)",
-        _monte_carlo_plot_kwargs()...,
+        ; _monte_carlo_plot_kwargs()...,
     )
     for controller_slug in unique(String.(filtered_df.ControllerSlug))
         case_df = filter(row -> row.ControllerSlug == controller_slug, filtered_df)

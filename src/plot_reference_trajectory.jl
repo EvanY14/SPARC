@@ -7,12 +7,19 @@ gr()
 const REFERENCE_TRAJECTORY_PATH = get(ENV, "SPARC_REFERENCE_TRAJECTORY_FILE", "optimal_trajectory.csv")
 const OUTPUT_DIR = get(ENV, "SPARC_REFERENCE_PLOTS_DIR", "reference_trajectory_output")
 const DISPLAY_PLOTS = parse(Bool, get(ENV, "SPARC_REF_DISPLAY", "false"))
-const PLOT_MARGIN = 8Plots.mm
+const PLOT_MARGIN = 4Plots.mm
 const GUIDE_FONT = font(10)
 const TICK_FONT = font(8)
 const TITLE_FONT = font(11)
 const TICKS_FONT_SMALL = font(8)
 const IEEE_SINGLE_COLUMN_SIZE = (520, 760)
+const COMBINED_MARGIN = 5Plots.mm
+const COMBINED_LEFT_MARGIN = 11Plots.mm
+const COMBINED_RIGHT_MARGIN = 5Plots.mm
+const COMBINED_BOTTOM_MARGIN = 7Plots.mm
+const COMBINED_TOP_MARGIN = 4Plots.mm
+const REFERENCE_3D_MARGIN = 6Plots.mm
+const REFERENCE_3D_SIZE = (920, 620)
 
 function base_plot_kwargs()
     return (
@@ -50,6 +57,9 @@ function save_reference_plot(plt, basename)
 end
 
 mkpath(OUTPUT_DIR)
+for name in readdir(OUTPUT_DIR)
+    rm(joinpath(OUTPUT_DIR, name); recursive = true, force = true)
+end
 
 optimal_reference = CSV.read(REFERENCE_TRAJECTORY_PATH, DataFrame)
 
@@ -80,12 +90,12 @@ reference_trajectory_3d_plot = plot(
     guidefont = GUIDE_FONT,
     tickfont = TICK_FONT,
     titlefont = TITLE_FONT,
-    left_margin = 12Plots.mm,
-    right_margin = 12Plots.mm,
-    bottom_margin = 12Plots.mm,
-    top_margin = 12Plots.mm,
+    left_margin = REFERENCE_3D_MARGIN,
+    right_margin = REFERENCE_3D_MARGIN,
+    bottom_margin = REFERENCE_3D_MARGIN,
+    top_margin = REFERENCE_3D_MARGIN,
     linewidth = 4,
-    size = (1000, 720),
+    size = REFERENCE_3D_SIZE,
 )
 
 altitude_plot = plot(
@@ -149,11 +159,11 @@ reference_state_plot_part1 = plot(
     layout = (3, 1),
     size = IEEE_SINGLE_COLUMN_SIZE,
     legend = false,
-    margin = 10Plots.mm,
-    left_margin = 16Plots.mm,
-    right_margin = 10Plots.mm,
-    bottom_margin = 14Plots.mm,
-    top_margin = 12Plots.mm,
+    margin = COMBINED_MARGIN,
+    left_margin = COMBINED_LEFT_MARGIN,
+    right_margin = COMBINED_RIGHT_MARGIN,
+    bottom_margin = COMBINED_BOTTOM_MARGIN,
+    top_margin = COMBINED_TOP_MARGIN,
     tickfont = TICKS_FONT_SMALL,
     guidefont = GUIDE_FONT,
     titlefont = TITLE_FONT,
@@ -166,11 +176,11 @@ reference_state_plot_part2 = plot(
     layout = (3, 1),
     size = IEEE_SINGLE_COLUMN_SIZE,
     legend = false,
-    margin = 10Plots.mm,
-    left_margin = 16Plots.mm,
-    right_margin = 10Plots.mm,
-    bottom_margin = 14Plots.mm,
-    top_margin = 12Plots.mm,
+    margin = COMBINED_MARGIN,
+    left_margin = COMBINED_LEFT_MARGIN,
+    right_margin = COMBINED_RIGHT_MARGIN,
+    bottom_margin = COMBINED_BOTTOM_MARGIN,
+    top_margin = COMBINED_TOP_MARGIN,
     tickfont = TICKS_FONT_SMALL,
     guidefont = GUIDE_FONT,
     titlefont = TITLE_FONT,
@@ -200,13 +210,13 @@ reference_control_plot = plot(
     angle_of_attack_plot,
     bank_angle_plot;
     layout = (2, 1),
-    size = (1000, 720),
+    size = IEEE_SINGLE_COLUMN_SIZE,
     legend = false,
-    margin = 10Plots.mm,
-    left_margin = 16Plots.mm,
-    right_margin = 10Plots.mm,
-    bottom_margin = 14Plots.mm,
-    top_margin = 12Plots.mm,
+    margin = COMBINED_MARGIN,
+    left_margin = COMBINED_LEFT_MARGIN,
+    right_margin = COMBINED_RIGHT_MARGIN,
+    bottom_margin = COMBINED_BOTTOM_MARGIN,
+    top_margin = COMBINED_TOP_MARGIN,
     tickfont = TICKS_FONT_SMALL,
     guidefont = GUIDE_FONT,
     titlefont = TITLE_FONT,

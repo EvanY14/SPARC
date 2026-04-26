@@ -19,7 +19,7 @@ const OUTPUT_DIR = get(ENV, "SPARC_NOMINAL_OUTPUT_DIR", "nominal_comparison_outp
 const DISPLAY_PLOTS = parse(Bool, get(ENV, "SPARC_NOMINAL_DISPLAY", "false"))
 const PLOTS_DIR = joinpath(OUTPUT_DIR, "plots")
 const MONTE_CARLO_LEGEND_POSITION = :outertopright
-const MONTE_CARLO_PLOT_MARGIN = 12Plots.mm
+const MONTE_CARLO_PLOT_MARGIN = 6Plots.mm
 const MONTE_CARLO_MAX_STATE_PROFILE_POINTS = parse(Int, get(ENV, "SPARC_NOMINAL_MAX_STATE_POINTS", "600"))
 const MONTE_CARLO_MAX_CONTROL_PROFILE_POINTS = parse(Int, get(ENV, "SPARC_NOMINAL_MAX_CONTROL_POINTS", "600"))
 const MONTE_CARLO_TITLE_FONTSIZE = 10
@@ -27,6 +27,13 @@ const MONTE_CARLO_GUIDE_FONTSIZE = 9
 const MONTE_CARLO_TICK_FONTSIZE = 8
 const MONTE_CARLO_LEGEND_FONTSIZE = 8
 const IEEE_SINGLE_COLUMN_STATE_SIZE = (520, 760)
+const NOMINAL_COMBINED_MARGIN = 5Plots.mm
+const NOMINAL_LEFT_MARGIN = 11Plots.mm
+const NOMINAL_RIGHT_MARGIN = 5Plots.mm
+const NOMINAL_BOTTOM_MARGIN = 7Plots.mm
+const NOMINAL_TOP_MARGIN = 4Plots.mm
+const NOMINAL_CONTROLLER_ALPHA = 0.9
+const NOMINAL_CONTROLLER_LINEWIDTH = 1.5
 
 struct ControllerCase
     name::String
@@ -77,16 +84,16 @@ function _nominal_plot_kwargs(; is_3d::Bool=false)
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
         legendfont = font(MONTE_CARLO_LEGEND_FONTSIZE),
-        size = is_3d ? (1050, 760) : (980, 680),
+        size = is_3d ? (980, 700) : (930, 620),
     )
 end
 
 function _nominal_subplot_kwargs(; legend = MONTE_CARLO_LEGEND_POSITION)
     return (
         legend = legend,
-        left_margin = 8Plots.mm,
-        right_margin = 6Plots.mm,
-        bottom_margin = 7Plots.mm,
+        left_margin = 7Plots.mm,
+        right_margin = 4Plots.mm,
+        bottom_margin = 5Plots.mm,
         titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
@@ -244,6 +251,12 @@ function build_context()
         R = R,
         β0_ref = β0_ref,
         α0_ref = α0_ref,
+        interp_altitude = interp_altitude,
+        interp_velocity = interp_velocity,
+        interp_longitude = interp_longitude,
+        interp_latitude = interp_latitude,
+        interp_flight_path = interp_flight_path,
+        interp_azimuth = interp_azimuth,
         nominal_trajectory = nominal_trajectory,
         target_states = target_states,
         velocity_scale = velocity_scale,
@@ -350,7 +363,7 @@ function _plot_state_panel(results::Vector{NominalRunResult}, profile_field::Sym
     plt = plot(
         xlabel = "Time (s)",
         ylabel = ylabel,
-        _nominal_subplot_kwargs()...,
+        ; _nominal_subplot_kwargs()...,
     )
     plot!(plt, reference_times, reference_values, color = :black, linewidth = 2, label = "Reference")
     for result in results
@@ -359,8 +372,8 @@ function _plot_state_panel(results::Vector{NominalRunResult}, profile_field::Sym
             getfield(result, :times),
             getfield(result, profile_field),
             color = result.case.color,
-            alpha = 0.35,
-            linewidth = 1.25,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
             label = result.case.name,
         )
     end
@@ -371,7 +384,7 @@ function _plot_control_panel(results::Vector{NominalRunResult}, profile_field::S
     plt = plot(
         xlabel = "Time (s)",
         ylabel = ylabel,
-        _nominal_subplot_kwargs(legend = MONTE_CARLO_LEGEND_POSITION)...,
+        ; _nominal_subplot_kwargs(legend = MONTE_CARLO_LEGEND_POSITION)...,
     )
     plot!(plt, reference_times, reference_values, seriestype = :steppost, color = :black, linewidth = 2, label = "Reference")
     for result in results
@@ -381,8 +394,8 @@ function _plot_control_panel(results::Vector{NominalRunResult}, profile_field::S
             getfield(result, profile_field),
             seriestype = :steppost,
             color = result.case.color,
-            alpha = 0.35,
-            linewidth = 1.25,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
             label = result.case.name,
         )
     end
@@ -405,11 +418,11 @@ function plot_nominal_state_profiles(results::Vector{NominalRunResult})
         state_plots[3];
         layout = (3, 1),
         size = IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin = 12Plots.mm,
-        left_margin = 14Plots.mm,
-        right_margin = 10Plots.mm,
-        bottom_margin = 12Plots.mm,
-        top_margin = 10Plots.mm,
+        margin = NOMINAL_COMBINED_MARGIN,
+        left_margin = NOMINAL_LEFT_MARGIN,
+        right_margin = NOMINAL_RIGHT_MARGIN,
+        bottom_margin = NOMINAL_BOTTOM_MARGIN,
+        top_margin = NOMINAL_TOP_MARGIN,
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
@@ -422,11 +435,11 @@ function plot_nominal_state_profiles(results::Vector{NominalRunResult})
         state_plots[6];
         layout = (3, 1),
         size = IEEE_SINGLE_COLUMN_STATE_SIZE,
-        margin = 12Plots.mm,
-        left_margin = 14Plots.mm,
-        right_margin = 10Plots.mm,
-        bottom_margin = 12Plots.mm,
-        top_margin = 10Plots.mm,
+        margin = NOMINAL_COMBINED_MARGIN,
+        left_margin = NOMINAL_LEFT_MARGIN,
+        right_margin = NOMINAL_RIGHT_MARGIN,
+        bottom_margin = NOMINAL_BOTTOM_MARGIN,
+        top_margin = NOMINAL_TOP_MARGIN,
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
@@ -443,17 +456,118 @@ function plot_nominal_control_profiles(results::Vector{NominalRunResult})
     fig = plot(
         control_plots...;
         layout = (2, 1),
-        size = (1300, 900),
-        margin = 12Plots.mm,
-        left_margin = 14Plots.mm,
-        right_margin = 10Plots.mm,
-        bottom_margin = 12Plots.mm,
-        top_margin = 10Plots.mm,
+        size = IEEE_SINGLE_COLUMN_STATE_SIZE,
+        margin = NOMINAL_COMBINED_MARGIN,
+        left_margin = NOMINAL_LEFT_MARGIN,
+        right_margin = NOMINAL_RIGHT_MARGIN,
+        bottom_margin = NOMINAL_BOTTOM_MARGIN,
+        top_margin = NOMINAL_TOP_MARGIN,
         tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
         guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
         titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
     )
     _save_plot_and_cleanup!(fig, "nominal_control_profiles.pdf")
+end
+
+function plot_nominal_state_errors(results::Vector{NominalRunResult})
+    plt_alt = plot(xlabel = "Time (s)", ylabel = "Altitude Error (km)"; _nominal_subplot_kwargs()...)
+    plt_lon = plot(xlabel = "Time (s)", ylabel = "Longitude Error (deg)"; _nominal_subplot_kwargs()...)
+    plt_lat = plot(xlabel = "Time (s)", ylabel = "Latitude Error (deg)"; _nominal_subplot_kwargs()...)
+    plt_vel = plot(xlabel = "Time (s)", ylabel = "Velocity Error (km/s)"; _nominal_subplot_kwargs()...)
+    plt_fpa = plot(xlabel = "Time (s)", ylabel = "Flight Path Angle Error (deg)"; _nominal_subplot_kwargs()...)
+    plt_azi = plot(xlabel = "Time (s)", ylabel = "Azimuth Error (deg)"; _nominal_subplot_kwargs()...)
+
+    for result in results
+        t = result.times
+        plot!(
+            plt_alt,
+            t,
+            result.altitude_profiles .- (CONTEXT.interp_altitude.(t) ./ 1e3),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+        plot!(
+            plt_lon,
+            t,
+            result.longitude_profiles .- rad2deg.(CONTEXT.interp_longitude.(t)),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+        plot!(
+            plt_lat,
+            t,
+            result.latitude_profiles .- rad2deg.(CONTEXT.interp_latitude.(t)),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+        plot!(
+            plt_vel,
+            t,
+            result.velocity_profiles .- (CONTEXT.interp_velocity.(t) ./ 1e3),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+        plot!(
+            plt_fpa,
+            t,
+            result.flight_path_profiles .- rad2deg.(CONTEXT.interp_flight_path.(t)),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+        plot!(
+            plt_azi,
+            t,
+            result.azimuth_profiles .- rad2deg.(CONTEXT.interp_azimuth.(t)),
+            color = result.case.color,
+            alpha = NOMINAL_CONTROLLER_ALPHA,
+            linewidth = NOMINAL_CONTROLLER_LINEWIDTH,
+            label = result.case.name,
+        )
+    end
+
+    fig_part1 = plot(
+        plt_alt,
+        plt_lon,
+        plt_lat;
+        layout = (3, 1),
+        size = IEEE_SINGLE_COLUMN_STATE_SIZE,
+        margin = NOMINAL_COMBINED_MARGIN,
+        left_margin = NOMINAL_LEFT_MARGIN,
+        right_margin = NOMINAL_RIGHT_MARGIN,
+        bottom_margin = NOMINAL_BOTTOM_MARGIN,
+        top_margin = NOMINAL_TOP_MARGIN,
+        tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
+        guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
+        titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
+    )
+    _save_plot_and_cleanup!(fig_part1, "nominal_state_errors_part1.pdf")
+
+    fig_part2 = plot(
+        plt_vel,
+        plt_fpa,
+        plt_azi;
+        layout = (3, 1),
+        size = IEEE_SINGLE_COLUMN_STATE_SIZE,
+        margin = NOMINAL_COMBINED_MARGIN,
+        left_margin = NOMINAL_LEFT_MARGIN,
+        right_margin = NOMINAL_RIGHT_MARGIN,
+        bottom_margin = NOMINAL_BOTTOM_MARGIN,
+        top_margin = NOMINAL_TOP_MARGIN,
+        tickfont = font(MONTE_CARLO_TICK_FONTSIZE),
+        guidefont = font(MONTE_CARLO_GUIDE_FONTSIZE),
+        titlefont = font(MONTE_CARLO_TITLE_FONTSIZE),
+    )
+    _save_plot_and_cleanup!(fig_part2, "nominal_state_errors_part2.pdf")
 end
 
 function cleanup_plots_dir!()
@@ -471,3 +585,4 @@ println("Running nominal MPG controller comparison")
 results = [build_nominal_run(case) for case in CONTROLLER_CASES]
 plot_nominal_state_profiles(results)
 plot_nominal_control_profiles(results)
+plot_nominal_state_errors(results)
