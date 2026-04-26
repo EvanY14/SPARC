@@ -1,11 +1,11 @@
 using LinearAlgebra
 
-const _MPG_STATE_SCALES = Ref([1.0e5, 0.2, 0.2, 5.0e3, 0.3, 0.5])
+const _MPG_STATE_SCALES = Ref([8.05e4, 0.26, 0.26, 5.0e3, 0.21, 0.5])
 const _MPG_STAGE_STATE_NORMALIZED_WEIGHTS = Diagonal([1200.0, 3500.0, 3500.0, 1200.0, 700.0, 1200.0])
 const _MPG_TERMINAL_STATE_NORMALIZED_WEIGHTS = Diagonal([2500.0, 180000.0, 180000.0, 4500.0, 2500.0, 4000.0])
 const _MPG_CONTROL_NORMALIZED_WEIGHTS = Diagonal([1.0, 1.0])
-const _MPG_DEFAULT_HORIZON = Ref(40)
-const _MPG_DEFAULT_TIME_STEP = Ref(0.6)
+const _MPG_DEFAULT_HORIZON = Ref(30)
+const _MPG_DEFAULT_TIME_STEP = Ref(0.4)
 
 function mpg_state_scales()
     return Float64.(_MPG_STATE_SCALES[])

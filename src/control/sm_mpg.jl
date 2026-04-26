@@ -1,7 +1,7 @@
 using LinearAlgebra
 
-const _SM_MPG_LAMBDA = Ref(0.2)
-const _SM_MPG_SLIDING_GAIN = Ref(0.02)
+const _SM_MPG_LAMBDA = Ref(0.4)
+const _SM_MPG_SLIDING_GAIN = Ref(0.03)
 const _SM_MPG_INCREMENT_GAIN = Ref(0.01)
 
 function sm_mpg_tuning_snapshot()

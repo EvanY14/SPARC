@@ -4,10 +4,20 @@ import Ipopt
 using CSV
 using DataFrames
 using Plots
+const MOI = JuMP.MOI
 include("../model/earth_atmosphere_polyfit.jl")
 include("../model/vehicle.jl")
 include("control_limits.jl")
 plotly()
+const DISPLAY_PLOTS = haskey(ENV, "DISPLAY") && !isempty(ENV["DISPLAY"]) && Sys.which("xdg-open") !== nothing
+
+function maybe_display(plt)
+    if DISPLAY_PLOTS
+        display(plt)
+    end
+    return plt
+end
+
 # Global variables
 const m = VEHICLE.mass    # mass (kg)
 
@@ -45,13 +55,16 @@ const t_s = 0.33         # time step (sec)
 const h_t = 25000.0 / H_SCALE          # altitude (m) / 1e5
 const v_t = 700.0 / V_SCALE         # velocity (m/sec) / 1e4
 const γ_t = deg2rad(-5.0)  # flight path angle (rad)
+const ϕ_t = deg2rad(25.0)  # target longitude (rad)
+const θ_t = deg2rad(3.0)   # target latitude (rad)
+const INITIAL_GUESS_PATH = joinpath(@__DIR__, "..", "..", "optimal_trajectory.csv")
 
 # Number of mesh points (knots) to be used
 const n = 503
 
 # Integration scheme to be used for the dynamics
 const integration_rule = "trapezoidal"  # "rectangular", "trapezoidal", or "rk4"
-display(plot(
+maybe_display(plot(
     earth_atmosphere_density.(1.0e3:1.0e3:100.0e3),
     1.0:1.0:100.0,
     title = "Earth Density vs Altitude",
@@ -61,10 +74,57 @@ display(plot(
     linewidth = 2,
     size = (700, 500),
 ))
+
+function load_initial_guess_from_csv(path::AbstractString, n_nodes::Integer)
+    if !isfile(path)
+        return nothing
+    end
+
+    df = CSV.read(path, DataFrame)
+    n_rows = nrow(df)
+    if n_rows < 2
+        return nothing
+    end
+
+    sample_points = collect(range(1.0, n_rows, length = n_nodes))
+    dt_samples = diff(Float64.(df.Time_s))
+    dt_last = isempty(dt_samples) ? t_s : dt_samples[end]
+    dt_source = vcat(dt_samples, dt_last)
+
+    interp_column(values) = Interpolations.LinearInterpolation(1:n_rows, Float64.(values), extrapolation_bc = Interpolations.Line())
+
+    altitude_guess = interp_column(df.Altitude_100km).(sample_points)
+    longitude_guess = deg2rad.(interp_column(df.Longitude_deg).(sample_points))
+    latitude_guess = deg2rad.(interp_column(df.Latitude_deg).(sample_points))
+    velocity_guess = (interp_column(df.Velocity_1000mps).(sample_points) .* 1.0e3) ./ V_SCALE
+    flight_path_guess = deg2rad.(interp_column(df.FlightPath_deg).(sample_points))
+    azimuth_guess = deg2rad.(interp_column(df.Azimuth_deg).(sample_points))
+    alpha_guess = deg2rad.(interp_column(df.AngleOfAttack_deg).(sample_points))
+    beta_guess = deg2rad.(interp_column(df.BankAngle_deg).(sample_points))
+    dt_guess = clamp.(interp_column(dt_source).(sample_points), 0.1, 1.0)
+
+    return hcat(
+        altitude_guess,
+        longitude_guess,
+        latitude_guess,
+        velocity_guess,
+        flight_path_guess,
+        azimuth_guess,
+        alpha_guess,
+        beta_guess,
+        dt_guess,
+    )
+end
 # Uncomment the lines below to pass user options to the solver
 user_options = (
-# "mu_strategy" => "monotone",
-# "linear_solver" => "ma27",
+    "tol" => 1e-9,
+    "acceptable_tol" => 1e-8,
+    "constr_viol_tol" => 1e-9,
+    "compl_inf_tol" => 1e-9,
+    "dual_inf_tol" => 1e-9,
+    "bound_relax_factor" => 0.0,
+    "honor_original_bounds" => "yes",
+    "max_iter" => 5000,
 )
 
 # Create JuMP model, using Ipopt as the solver
@@ -81,11 +141,6 @@ model = Model(optimizer_with_attributes(Ipopt.Optimizer, user_options...))
     deg2rad(-90) ≤ α[1:n] ≤ deg2rad(90)  # angle of attack (rad)
     deg2rad(-89) ≤ β[1:n] ≤ deg2rad(89)  # bank angle (rad)
     0.1 ≤       Δt[1:n] ≤ 1.0          # time step (sec)
-    0.0 <= lat_slack <= deg2rad(1.0)  # terminal latitude slack (rad)
-    0.0 <= lon_slack <= deg2rad(1.0)  # terminal longitude slack (rad)
-    0.0 <= altitude_slack             # terminal altitude slack, scaled by H_SCALE
-    0.0 <= velocity_slack             # terminal velocity slack, scaled by V_SCALE
-    0.0 <= flight_path_angle_slack <= deg2rad(1.0) # terminal flight-path angle slack (rad)
     # 0.0 <= q_dot[1:n] <= 269.0               # heat rate (W/m^2)
     # 0.0 <= q[1:n] <= 6200.0                  # heat load (J/m^2)
     # Δt[1:n] == 4.0         # time step (sec)
@@ -103,18 +158,20 @@ fix(β[1], β_s; force = true)
 # fix(q_dot[1], 0.0; force = true)
 # fix(q[1], 0.0; force = true)
 
-# Terminal conditions are enforced softly below with slack variables.
-# fix(scaled_h[n], h_t; force = true)
-# fix(scaled_v[n], v_t; force = true)
-# fix(γ[n], γ_t; force = true)
-# fix(θ[n], deg2rad(-4.5); force = true)  # Target latitude in radians
-# fix(ϕ[n], deg2rad(137.4); force = true)  # Target longitude in radians
+# Hard terminal conditions: pin the final state to the desired target.
+fix(scaled_h[n], h_t; force = true)
+fix(ϕ[n], ϕ_t; force = true)
+fix(θ[n], θ_t; force = true)
+fix(scaled_v[n], v_t; force = true)
+fix(γ[n], γ_t; force = true)
 
 # Initial guess: linear interpolation between boundary conditions
 x_s = [h_s, ϕ_s, θ_s, v_s, γ_s, ψ_s, α_s, β_s, t_s]  # Initial state and control at the first knot
-x_t = [h_t, ϕ_s, θ_s, v_t, γ_t, ψ_s, α_s, β_s, t_s]
+x_t = [h_t, ϕ_t, θ_t, v_t, γ_t, ψ_s, α_s, β_s, t_s]
 interp_linear = Interpolations.LinearInterpolation([1, n], [x_s, x_t])
-initial_guess = mapreduce(transpose, vcat, interp_linear.(1:n))
+linear_initial_guess = mapreduce(transpose, vcat, interp_linear.(1:n))
+csv_initial_guess = load_initial_guess_from_csv(INITIAL_GUESS_PATH, n)
+initial_guess = something(csv_initial_guess, linear_initial_guess)
 set_start_value.(scaled_h, initial_guess[:, 1])
 set_start_value.(ϕ, initial_guess[:, 2])
 set_start_value.(θ, initial_guess[:, 3])
@@ -124,11 +181,7 @@ set_start_value.(ψ, initial_guess[:, 6])
 set_start_value.(α, initial_guess[:, 7])
 set_start_value.(β, initial_guess[:, 8])
 set_start_value.(Δt, initial_guess[:, 9])
-set_start_value(lat_slack, 0.0)
-set_start_value(lon_slack, 0.0)
-set_start_value(altitude_slack, 0.0)
-set_start_value(velocity_slack, 0.0)
-set_start_value(flight_path_angle_slack, 0.0)
+fix(Δt[n], initial_guess[end, 9]; force = true)
 
 # Functions to restore `h` and `v` to their true scale
 @expression(model, h[j=1:n], scaled_h[j] * H_SCALE)
@@ -264,41 +317,38 @@ for j in 2:n
 end
 
 # Heating constraints
-# Objective: Reach target latitude and longitude
-target_latitude = deg2rad(3.0)  # Target latitude in radians
-target_longitude = deg2rad(25.0)  # Target longitude in radians
-@expression(model, latitude_error, θ[n] - target_latitude)
-@expression(model, longitude_error, ϕ[n] - target_longitude)
-
-# Soft terminal constraints: slack bounds the absolute terminal miss in each axis.
-# @constraint(model, latitude_error <= lat_slack)
-# @constraint(model, -latitude_error <= lat_slack)
-# @constraint(model, longitude_error <= lon_slack)
-# @constraint(model, -longitude_error <= lon_slack)
 @constraint(model, scaled_h[1:(n-1)] .>= h_t)  # Hard constraint on altitude to ensure we don't end up underground
-@expression(model, altitude_error, scaled_h[n] - h_t)
-@expression(model, velocity_error, scaled_v[n] - v_t)
-@expression(model, flight_path_angle_error, γ[n] - γ_t) # Target flight path angle in radians
-@constraint(model, altitude_error <= altitude_slack)
-@constraint(model, -altitude_error <= altitude_slack)
-@constraint(model, velocity_error <= velocity_slack)
-@constraint(model, -velocity_error <= velocity_slack)
-@constraint(model, flight_path_angle_error <= flight_path_angle_slack)
-@constraint(model, -flight_path_angle_error <= flight_path_angle_slack)
+@expression(model, total_time, sum(Δt[j] for j in 1:(n - 1)))
+@expression(model, control_smoothing, sum((α[j] - α[j - 1])^2 + (β[j] - β[j - 1])^2 for j in 2:n))
+@expression(model, control_effort, sum(α[j]^2 + β[j]^2 for j in 1:n))
 @objective(
     model,
     Min,
-    1.0e4 * lat_slack^2 +
-    1.0e4 * lon_slack^2 +
-    1.0e6 * altitude_slack^2 +
-    1.0e6 * velocity_slack^2 +
-    1.0e5 * flight_path_angle_slack^2,
+    1.0e3 * total_time +
+    1.0e5 * control_smoothing +
+    1.0e3 * control_effort,
 )
 
 # set_silent(model)  # Hide solver's verbose output
-set_attribute(model, "tol", 1e-6)  # Set solver tolerance
 optimize!(model)  # Solve for the control and state
-assert_is_solved_and_feasible(model)
+term_status = termination_status(model)
+primal_stat = primal_status(model)
+acceptable_term_statuses = (
+    MOI.OPTIMAL,
+    MOI.LOCALLY_SOLVED,
+    MOI.ALMOST_OPTIMAL,
+    MOI.ALMOST_LOCALLY_SOLVED,
+)
+acceptable_primal_statuses = (
+    MOI.FEASIBLE_POINT,
+    MOI.NEARLY_FEASIBLE_POINT,
+)
+if !(term_status in acceptable_term_statuses && primal_stat in acceptable_primal_statuses)
+    error(
+        "Reference trajectory solve failed. Here is the output of `solution_summary` to help debug why this happened:\n\n" *
+        sprint(show, solution_summary(model; verbose = false)),
+    )
+end
 
 # Show final cross-range of the solution
 println(
@@ -317,6 +367,19 @@ println(
     " and flight path angle γ = ",
     round(value(γ[n]) |> rad2deg; digits = 2),
     "°",
+)
+println(
+    "Terminal errors: Δh = ",
+    value(h[n]) - h_t * H_SCALE,
+    " m, Δlon = ",
+    rad2deg(value(ϕ[n]) - ϕ_t),
+    " deg, Δlat = ",
+    rad2deg(value(θ[n]) - θ_t),
+    " deg, Δv = ",
+    value(v[n]) - v_t * V_SCALE,
+    " m/sec, Δγ = ",
+    rad2deg(value(γ[n]) - γ_t),
+    " deg",
 )
 
 using Plots
@@ -342,7 +405,7 @@ plt_flight_path =
 plt_azimuth =
     plot(ts, rad2deg.(value.(ψ)); legend = nothing, title = "Azimuth (deg)")
 
-display(plot(
+maybe_display(plot(
     plt_altitude,
     plt_velocity,
     plt_longitude,
@@ -355,7 +418,7 @@ display(plot(
 ))
 
 q_dots = earth_atmosphere_density.(value.(h)).^n_exp .* (value.(v)).^m_exp .* C1
-display(plot(
+maybe_display(plot(
     ts,
     q_dots;
     legend = nothing,
@@ -394,7 +457,7 @@ plt_heat_rate = plot(
 #     legend = nothing,
 #     title = "Heat Load (J/m^2)",
 # )
-display(plot(
+maybe_display(plot(
     plt_attack_angle,
     plt_bank_angle,
     # plt_heat_rate,
@@ -404,7 +467,7 @@ display(plot(
     size = (700, 700),
 ))
 
-display(plot(
+maybe_display(plot(
     rad2deg.(value.(ϕ)),
     rad2deg.(value.(θ)),
     value.(scaled_h);
